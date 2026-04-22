@@ -1,13 +1,16 @@
 #include "cIGZFrameWork.h"
+#include "cISC4App.h"
 #include "cRZCOMDllDirector.h"
 #include "cRZBaseString.h"
 #include "cISC4BuildingOccupant.h"
+#include "cISC4City.h"
 #include "cISC4Lot.h"
 #include "cISC4LotConfiguration.h"
 #include "cISC4LotManager.h"
 #include "cISC4Occupant.h"
 #include "cISC4TrafficSimulator.h"
 #include "cISCPropertyHolder.h"
+#include "GZServPtrs.h"
 #include "SC4List.h"
 #include "SC4Rect.h"
 #include "SC4Vector.h"
@@ -184,6 +187,12 @@ namespace {
 
     cISC4TrafficSimulator* GetTrafficSimulator() {
         return *reinterpret_cast<cISC4TrafficSimulator**>(kSpTrafficSimulatorAddress);
+    }
+
+    cISC4ZoneManager* GetZoneManager() {
+        const cISC4AppPtr app;
+        cISC4City* city = app ? app->GetCity() : nullptr;
+        return city ? city->GetZoneManager() : nullptr;
     }
 
     void* GetTrafficNetworkMap() {
@@ -689,6 +698,49 @@ namespace {
         return result;
     }
 
+    bool IsResidentialZoneType(cISC4ZoneManager::ZoneType zoneType) {
+        switch (zoneType) {
+            case cISC4ZoneManager::ZoneType::ResidentialLowDensity:
+            case cISC4ZoneManager::ZoneType::ResidentialMediumDensity:
+            case cISC4ZoneManager::ZoneType::ResidentialHighDensity:
+                return true;
+            default:
+                return false;
+        }
+    }
+
+    bool IsResidentialSourceLot(cISC4Lot* lot) {
+        if (!lot) {
+            return false;
+        }
+
+        if (IsResidentialZoneType(lot->GetZoneType())) {
+            return true;
+        }
+
+        cISC4ZoneManager* zoneManager = GetZoneManager();
+        if (!zoneManager) {
+            return false;
+        }
+
+        SC4Rect<int32_t> bounds;
+        if (lot->GetBoundingRect(bounds)) {
+            for (int32_t z = bounds.topLeftY; z <= bounds.bottomRightY; ++z) {
+                for (int32_t x = bounds.topLeftX; x <= bounds.bottomRightX; ++x) {
+                    if (x >= 0 && z >= 0 && IsResidentialZoneType(zoneManager->GetZoneType(x, z))) {
+                        return true;
+                    }
+                }
+            }
+            return false;
+        }
+
+        int32_t x = 0;
+        int32_t z = 0;
+        return lot->GetLocation(x, z) && x >= 0 && z >= 0 &&
+               IsResidentialZoneType(zoneManager->GetZoneType(x, z));
+    }
+
     std::string FormatSubnetworks(const SC4Vector<uint32_t>& subnetworks) {
         if (subnetworks.empty()) {
             return "[]";
@@ -911,6 +963,12 @@ namespace {
             return;
         }
 
+        if (!IsResidentialSourceLot(lot)) {
+            TRANSIT_LOG_TRACE("TransitAccess: skipping non-residential TE road-access source {}",
+                              DescribeLot(lot));
+            return;
+        }
+
         SC4Rect<int32_t> sourceBounds;
         if (!lot->GetBoundingRect(sourceBounds)) {
             TRANSIT_LOG_TRACE("TransitAccess: could not get source lot bounds for {}", DescribeLot(lot));
@@ -955,7 +1013,7 @@ namespace {
 
     bool GetLotSubnetworks(cISC4TrafficSimulator* trafficSimulator, cISC4Lot* lot, SC4Vector<uint32_t>& subnetworks) {
         subnetworks.clear();
-        if (!trafficSimulator || !lot) {
+        if (!trafficSimulator || !lot || !IsResidentialSourceLot(lot)) {
             return false;
         }
 
@@ -1040,7 +1098,7 @@ namespace {
         int purpose,
         bool shouldLog) {
 
-        if (!trafficSimulator || !lot || !gOriginalGetConnectedDestinationCount) {
+        if (!trafficSimulator || !lot || !IsResidentialSourceLot(lot) || !gOriginalGetConnectedDestinationCount) {
             return 0;
         }
 
@@ -1194,6 +1252,12 @@ namespace {
     }
 
     bool RetryCreateStartNodesThroughTransitEnabledLot(void* pathFinder, cISC4Lot* sourceLot) {
+        if (!IsResidentialSourceLot(sourceLot)) {
+            TRANSIT_LOG_TRACE("TransitAccess: skipping non-residential CreateStartNodes TE retry source {}",
+                              DescribeLot(sourceLot));
+            return false;
+        }
+
         std::vector<cISC4Lot*> candidates;
         std::unordered_set<cISC4Lot*> seenCandidates;
         CollectAdjacentTransitEnabledRoadAccessLots(sourceLot, candidates, seenCandidates);
