@@ -1,6 +1,7 @@
 #pragma once
 
 #include "SC4UI.h"
+#include "cIGZWin.h"
 #include "cISC43DRender.h"
 #include "cS3DVector2.h"
 #include "cS3DVector3.h"
