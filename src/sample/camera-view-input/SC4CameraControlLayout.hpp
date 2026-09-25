@@ -11,11 +11,6 @@
 #include <cstddef>
 #include <cstdint>
 
-#ifndef NOMINMAX
-#define NOMINMAX
-#endif
-#include <Windows.h>
-
 struct SC4Float4
 {
     float fX;
@@ -479,7 +474,7 @@ namespace SC4CameraControl
             return false;
         }
 
-        cameraControl->cameraDistance = std::max(1.0f, value);
+        cameraControl->cameraDistance = (std::max)(1.0f, value);
         return Refresh(*cameraControl, kUpdateReasonGeneric);
     }
 
@@ -501,8 +496,8 @@ namespace SC4CameraControl
             return false;
         }
 
-        cameraControl->citySizeX = std::max(1.0f, x);
-        cameraControl->citySizeZ = std::max(1.0f, z);
+        cameraControl->citySizeX = (std::max)(1.0f, x);
+        cameraControl->citySizeZ = (std::max)(1.0f, z);
         return Refresh(*cameraControl);
     }
 
@@ -542,8 +537,8 @@ namespace SC4CameraControl
             return false;
         }
 
-        const uint32_t safeWidth = static_cast<uint32_t>(std::max(1, width));
-        const uint32_t safeHeight = static_cast<uint32_t>(std::max(1, height));
+        const uint32_t safeWidth = static_cast<uint32_t>((std::max)(1, width));
+        const uint32_t safeHeight = static_cast<uint32_t>((std::max)(1, height));
         return renderer->SetViewportSize(safeWidth, safeHeight);
     }
 }
