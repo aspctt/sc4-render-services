@@ -100,22 +100,25 @@ set(IMGUI_BACKENDS
         ${IMGUI_DIR}/backends/imgui_impl_win32.cpp
 )
 
-add_library(imgui SHARED ${IMGUI_CORE_SOURCES} ${IMGUI_BACKENDS})
-
-target_include_directories(imgui PUBLIC
+# ImGui is compiled into SC4RenderServices.dll and exported from it. This target only carries
+# what every module that includes imgui.h needs to agree on: the headers and the config.
+add_library(imgui INTERFACE)
+target_include_directories(imgui INTERFACE
         ${IMGUI_DIR}
         ${IMGUI_DIR}/backends
         ${SC4RS_ROOT}/src/public
 )
-# Every module that includes imgui.h has to see the same config, so it is PUBLIC.
-target_compile_definitions(imgui
-        PUBLIC IMGUI_USER_CONFIG="ImGuiUserConfig.h"
-        PRIVATE IMGUI_DLL_EXPORT
-)
+target_compile_definitions(imgui INTERFACE IMGUI_USER_CONFIG="ImGuiUserConfig.h")
 
-if(WIN32)
-    target_link_libraries(imgui PRIVATE user32 gdi32)
-endif()
+# Links a plugin against the ImGui that SC4RenderServices.dll exports. The import is delay-loaded,
+# so load order does not matter: the game may load the plugin first, and the import resolves on
+# the first ImGui call, which a plugin makes only once it holds the ImGui service.
+function(sc4rs_use_imgui target)
+    target_link_libraries(${target} PRIVATE SC4RenderServices imgui delayimp)
+    target_compile_definitions(${target} PRIVATE IMGUI_DLL_IMPORT)
+    target_link_options(${target} PRIVATE "/DELAYLOAD:SC4RenderServices.dll")
+    target_sources(${target} PRIVATE ${SC4RS_ROOT}/src/public/SC4RenderServicesDelayLoad.cpp)
+endfunction()
 
 # Preserve existing link name in this project while using the vendor CMake target.
 add_library(gzcom2 ALIAS gzcom_dll)
@@ -183,6 +186,8 @@ set(CUSTOM_SERVICES_SOURCES
 
 add_library(SC4RenderServices SHARED
         ${CUSTOM_SERVICES_SOURCES}
+        ${IMGUI_CORE_SOURCES}
+        ${IMGUI_BACKENDS}
         ${SC4_COMMON_DIRECTOR_DEF}
         ${SC4_RENDER_SERVICES_VERSION_RESOURCE}
 )
@@ -201,12 +206,12 @@ target_link_libraries(SC4RenderServices PRIVATE
         spdlog
 )
 target_compile_definitions(SC4RenderServices PRIVATE
-        IMGUI_DLL_IMPORT
+        IMGUI_DLL_EXPORT
         SC4RS_PRODUCT_VERSION_STR="${SC4RS_PRODUCT_VERSION_STR}"
 )
 
 if(WIN32)
-    target_link_libraries(SC4RenderServices PRIVATE kernel32 user32 Version ddraw dxguid winmm)
+    target_link_libraries(SC4RenderServices PRIVATE kernel32 user32 gdi32 Version ddraw dxguid winmm)
 endif()
 
 set_target_properties(SC4RenderServices PROPERTIES
@@ -231,11 +236,10 @@ target_include_directories(SC4ImGuiSample PRIVATE
 )
 
 target_link_libraries(SC4ImGuiSample PRIVATE
-        imgui
         gzcom2
         spdlog
 )
-target_compile_definitions(SC4ImGuiSample PRIVATE IMGUI_DLL_IMPORT)
+sc4rs_use_imgui(SC4ImGuiSample)
 
 set_target_properties(SC4ImGuiSample PROPERTIES
         OUTPUT_NAME "SC4ImGuiSample"
@@ -259,12 +263,11 @@ target_include_directories(SC4ImGuiSampleCity PRIVATE
 )
 
 target_link_libraries(SC4ImGuiSampleCity PRIVATE
-        imgui
         gzcom2
         spdlog
 )
 
-target_compile_definitions(SC4ImGuiSampleCity PRIVATE IMGUI_DLL_IMPORT)
+sc4rs_use_imgui(SC4ImGuiSampleCity)
 
 set_target_properties(SC4ImGuiSampleCity PROPERTIES
         OUTPUT_NAME "SC4ImGuiSampleCity"
@@ -288,12 +291,11 @@ target_include_directories(SC4ImGuiSampleDemo PRIVATE
 )
 
 target_link_libraries(SC4ImGuiSampleDemo PRIVATE
-        imgui
         gzcom2
         spdlog
 )
 
-target_compile_definitions(SC4ImGuiSampleDemo PRIVATE IMGUI_DLL_IMPORT)
+sc4rs_use_imgui(SC4ImGuiSampleDemo)
 
 set_target_properties(SC4ImGuiSampleDemo PROPERTIES
         OUTPUT_NAME "SC4ImGuiSampleDemo"
@@ -317,12 +319,11 @@ target_include_directories(SC4ImGuiTextureSample PRIVATE
 )
 
 target_link_libraries(SC4ImGuiTextureSample PRIVATE
-        imgui
         gzcom2
         spdlog
 )
 
-target_compile_definitions(SC4ImGuiTextureSample PRIVATE IMGUI_DLL_IMPORT)
+sc4rs_use_imgui(SC4ImGuiTextureSample)
 
 set_target_properties(SC4ImGuiTextureSample PROPERTIES
         OUTPUT_NAME "SC4ImGuiTextureSample"
@@ -347,7 +348,6 @@ target_include_directories(SC4WorldProjectionSample PRIVATE
 )
 
 target_link_libraries(SC4WorldProjectionSample PRIVATE
-        imgui
         gzcom2
         spdlog
 )
@@ -356,7 +356,7 @@ if(WIN32)
     target_link_libraries(SC4WorldProjectionSample PRIVATE gdiplus)
 endif()
 
-target_compile_definitions(SC4WorldProjectionSample PRIVATE IMGUI_DLL_IMPORT)
+sc4rs_use_imgui(SC4WorldProjectionSample)
 
 set_target_properties(SC4WorldProjectionSample PROPERTIES
         OUTPUT_NAME "SC4WorldProjectionSample"
@@ -379,12 +379,11 @@ target_include_directories(SC4S3DCameraDebugSample PRIVATE
 )
 
 target_link_libraries(SC4S3DCameraDebugSample PRIVATE
-        imgui
         gzcom2
         spdlog
 )
 
-target_compile_definitions(SC4S3DCameraDebugSample PRIVATE IMGUI_DLL_IMPORT)
+sc4rs_use_imgui(SC4S3DCameraDebugSample)
 
 set_target_properties(SC4S3DCameraDebugSample PROPERTIES
         OUTPUT_NAME "SC4S3DCameraDebugSample"
@@ -407,12 +406,11 @@ target_include_directories(SC4OverlayManagerSample PRIVATE
 )
 
 target_link_libraries(SC4OverlayManagerSample PRIVATE
-        imgui
         gzcom2
         spdlog
 )
 
-target_compile_definitions(SC4OverlayManagerSample PRIVATE IMGUI_DLL_IMPORT)
+sc4rs_use_imgui(SC4OverlayManagerSample)
 
 set_target_properties(SC4OverlayManagerSample PROPERTIES
         OUTPUT_NAME "SC4OverlayManagerSample"
@@ -435,12 +433,11 @@ target_include_directories(SC4DrawServiceSample PRIVATE
 )
 
 target_link_libraries(SC4DrawServiceSample PRIVATE
-        imgui
         gzcom2
         spdlog
 )
 
-target_compile_definitions(SC4DrawServiceSample PRIVATE IMGUI_DLL_IMPORT)
+sc4rs_use_imgui(SC4DrawServiceSample)
 
 set_target_properties(SC4DrawServiceSample PROPERTIES
         OUTPUT_NAME "SC4DrawServiceSample"
@@ -465,12 +462,11 @@ target_include_directories(SC4RoadDecalSample PRIVATE
 )
 
 target_link_libraries(SC4RoadDecalSample PRIVATE
-        imgui
         gzcom2
         spdlog
 )
 
-target_compile_definitions(SC4RoadDecalSample PRIVATE IMGUI_DLL_IMPORT)
+sc4rs_use_imgui(SC4RoadDecalSample)
 
 set_target_properties(SC4RoadDecalSample PROPERTIES
         OUTPUT_NAME "SC4RoadDecalSample"
@@ -493,12 +489,11 @@ target_include_directories(SC4TerrainDecalSample PRIVATE
 )
 
 target_link_libraries(SC4TerrainDecalSample PRIVATE
-        imgui
         gzcom2
         spdlog
 )
 
-target_compile_definitions(SC4TerrainDecalSample PRIVATE IMGUI_DLL_IMPORT)
+sc4rs_use_imgui(SC4TerrainDecalSample)
 
 set_target_properties(SC4TerrainDecalSample PROPERTIES
         OUTPUT_NAME "SC4TerrainDecalSample"
@@ -522,12 +517,11 @@ target_include_directories(SC4CameraViewInputSample PRIVATE
 )
 
 target_link_libraries(SC4CameraViewInputSample PRIVATE
-        imgui
         gzcom2
         spdlog
 )
 
-target_compile_definitions(SC4CameraViewInputSample PRIVATE IMGUI_DLL_IMPORT)
+sc4rs_use_imgui(SC4CameraViewInputSample)
 
 set_target_properties(SC4CameraViewInputSample PROPERTIES
         OUTPUT_NAME "SC4CameraViewInputSample"
@@ -561,7 +555,7 @@ set_target_properties(SC4DateJumperSample PROPERTIES
 
 
 add_custom_target(SC4RenderServicesAllTargets
-        DEPENDS imgui SC4RenderServices SC4ImGuiSample SC4ImGuiSampleCity SC4ImGuiSampleDemo SC4ImGuiTextureSample SC4WorldProjectionSample SC4S3DCameraDebugSample SC4OverlayManagerSample SC4DrawServiceSample SC4RoadDecalSample SC4TerrainDecalSample SC4CameraViewInputSample SC4DateJumperSample
+        DEPENDS SC4RenderServices SC4ImGuiSample SC4ImGuiSampleCity SC4ImGuiSampleDemo SC4ImGuiTextureSample SC4WorldProjectionSample SC4S3DCameraDebugSample SC4OverlayManagerSample SC4DrawServiceSample SC4RoadDecalSample SC4TerrainDecalSample SC4CameraViewInputSample SC4DateJumperSample
 )
 
 # Automatic deployment to SC4 directories
@@ -590,14 +584,6 @@ if(WIN32 AND NOT DEFINED ENV{CI})
 
     if(SC4_INSTALL_DIR)
         message(STATUS "Found SC4 installation at: ${SC4_INSTALL_DIR}")
-
-        add_custom_command(TARGET imgui POST_BUILD
-                COMMAND ${CMAKE_COMMAND} -E make_directory "${SC4_INSTALL_DIR}/Apps"
-                COMMAND ${CMAKE_COMMAND} -E copy_if_different
-                $<TARGET_FILE:imgui>
-                "${SC4_INSTALL_DIR}/Apps/"
-                COMMENT "Deploying imgui.dll to Apps folder"
-        )
 
         add_custom_command(TARGET SC4RenderServices POST_BUILD
                 COMMAND ${CMAKE_COMMAND} -E make_directory "${SC4_PLUGINS_DIR}"
@@ -692,7 +678,6 @@ if(WIN32 AND NOT DEFINED ENV{CI})
         )
 
         message(STATUS "Deployment targets configured:")
-        message(STATUS "  - imgui.dll -> ${SC4_INSTALL_DIR}/Apps/")
         message(STATUS "  - SC4RenderServices.dll -> ${SC4_PLUGINS_DIR}/")
         message(STATUS "  - SC4ImGuiSample.dll -> ${SC4_PLUGINS_DIR}/")
         message(STATUS "  - SC4ImGuiSampleCity.dll -> ${SC4_PLUGINS_DIR}/")

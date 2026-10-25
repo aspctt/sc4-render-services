@@ -64,6 +64,28 @@ namespace {
         const std::filesystem::path temp(GetModulePath(moduleHandle));
         return temp.parent_path();
     }
+
+    // ImGui now lives in SC4RenderServices.dll. A leftover imgui.dll in the game's Apps folder is
+    // only loaded by plugins built for an older SC4RenderServices. They no longer get the ImGui
+    // service, so their UI stays hidden until they are rebuilt.
+    void WarnAboutLegacyImGuiDll(const char* when) {
+        if (const HMODULE legacy = GetModuleHandleW(L"imgui.dll")) {
+            std::string path = "?";
+            try {
+                path = std::filesystem::path(GetModulePath(legacy)).string();
+            } catch (const std::exception&) {}
+            LOG_WARN("RenderServicesDirector ({}): an old imgui.dll is loaded from {}. A plugin built for an older "
+                     "SC4RenderServices loaded it; that plugin gets no ImGui UI until it is rebuilt.", when, path);
+            return;
+        }
+        try {
+            const auto legacyFile = std::filesystem::path(GetModulePath(nullptr)).parent_path() / "imgui.dll";
+            if (std::filesystem::exists(legacyFile)) {
+                LOG_WARN("RenderServicesDirector ({}): {} is no longer needed and can be deleted. ImGui is now part "
+                         "of SC4RenderServices.dll.", when, legacyFile.string());
+            }
+        } catch (const std::exception&) {}
+    }
 }
 
 class RenderServicesDirector final : public cRZMessage2COMDirector {
@@ -116,6 +138,7 @@ public:
         LOG_INFO("RenderServicesDirector: terrain decal renderer settings (DefaultDepthOffset={}, ShadowRecoveryOpacityScale={})",
                  settings.GetTerrainDecalCustomDefaultDepthOffset(),
                  settings.GetTerrainDecalShadowRecoveryOpacityScale());
+        WarnAboutLegacyImGuiDll("startup");
 
         if (!mpFrameWork) {
             LOG_WARN("RenderServicesDirector: framework not available");
@@ -217,6 +240,12 @@ public:
             return false;
         }
         return terrainDecalService_.HandleMessage(pMsg);
+    }
+
+    bool PostAppInit() override {
+        // Every plugin is loaded by now, including any that pulled in an old imgui.dll.
+        WarnAboutLegacyImGuiDll("after plugins loaded");
+        return true;
     }
 
     bool PostAppShutdown() override {
