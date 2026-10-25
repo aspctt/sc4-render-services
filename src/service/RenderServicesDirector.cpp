@@ -1,6 +1,7 @@
 #include "DrawService.h"
 #include "ImGuiService.h"
 #include "S3DCameraService.h"
+#include "WorldDrawService.h"
 #include "decal/TerrainDecalService.h"
 
 #include "GZServPtrs.h"
@@ -201,6 +202,13 @@ public:
             if (drawService_.Init()) {
                 mpFrameWork->AddSystemService(&drawService_);
                 LOG_INFO("RenderServicesDirector: DrawService registered");
+                ImGuiService* const imgui = settings.GetEnableImGuiService() ? &imguiService_ : nullptr;
+                worldDrawService_.SetDependencies(&drawService_, imgui);
+                if (worldDrawService_.Init()) {
+                    mpFrameWork->AddSystemService(&worldDrawService_);
+                    worldDrawServiceRegistered_ = true;
+                    LOG_INFO("RenderServicesDirector: WorldDrawService registered");
+                }
             } else {
                 LOG_WARN("RenderServicesDirector: DrawService not registered (version check failed)");
             }
@@ -256,6 +264,9 @@ public:
             mpFrameWork->RemoveFromTick(&imguiService_);
             mpFrameWork->RemoveSystemService(&imguiService_);
             mpFrameWork->RemoveSystemService(&cameraService_);
+            if (worldDrawServiceRegistered_) {
+                mpFrameWork->RemoveSystemService(&worldDrawService_);
+            }
             mpFrameWork->RemoveSystemService(&drawService_);
             if (terrainDecalServiceRegistered_) {
                 mpFrameWork->RemoveFromTick(&terrainDecalService_);
@@ -274,6 +285,8 @@ public:
 
         imguiService_.Shutdown();
         cameraService_.Shutdown();
+        worldDrawService_.Shutdown();
+        worldDrawServiceRegistered_ = false;
         drawService_.Shutdown();
         terrainDecalService_.Shutdown();
         terrainDecalServiceRegistered_ = false;
@@ -339,6 +352,8 @@ private:
     ImGuiService imguiService_;
     S3DCameraService cameraService_;
     DrawService drawService_;
+    WorldDrawService worldDrawService_;
+    bool worldDrawServiceRegistered_ = false;
     TerrainDecalService terrainDecalService_;
     cRZAutoRefCount<cIGZMessageServer2> messageServer_;
     bool terrainDecalServiceRegistered_ = false;
