@@ -179,18 +179,61 @@ When the D3DX object is missing, which is the case on SCD3D11 and scvk since ste
 `CompositeManagedDecalsAfterShadows_` returns false and the replay runs instead. So decals
 should already work on every driver, with the replay look for shadows.
 
+### What the composite actually computes
+
+The offscreen target is cleared to transparent black and the decals are drawn into it with
+normal alpha blending. That image is then blended over the scene with its alpha scaled by
+`k` (0.25). For a single decal with colour `C` and alpha `a` that gives
+`S * (1 - k*a*a) + k * a*a*a * C`. Where decals are opaque (`a = 1`) the result is
+`S * (1 - k) + k * C_top`, using only the topmost decal. The replay instead adds one
+`k * a` layer per decal, which is why overlaps come out darker.
+
+### Doing it through the game's own driver
+
+The driver interface has no offscreen targets, but every driver also implements two extension
+interfaces the game requires, and SCD3D11 has a real stencil buffer (`D24_UNORM_S8_UINT`, with
+`StencilFunc`/`StencilOp`/`ClearStencil` implemented):
+
+- `cIGZGSnapshotExtension` (`0xE69BFE2A`): `CopyColorBuffer` reads the colour buffer back to
+  the CPU. The game uses it for snapshots and region thumbnails.
+- `cIGZGBufferRegionExtension` (`0x669565FE`): saves part of the colour, depth or stencil
+  buffer and copies it back later. The game uses it to avoid redrawing the whole scene. The
+  copy back is a plain copy, it cannot blend.
+
+Options, best first:
+
+1. **Stencil, one recovery layer per pixel.** Clear stencil, then draw the replay from the
+   topmost decal down, with the stencil test passing only where the value is still 0 and
+   setting it to 1 on pass. An alpha test at a very low threshold keeps fully transparent
+   texels from claiming pixels. Each pixel then gets exactly one recovery layer, from its
+   topmost decal, which matches the composite for opaque decals and their overlaps. It runs
+   entirely on the GPU and costs one extra stencil clear. The difference that remains is at
+   soft, partly transparent decal edges, where the composite's `a*a*a` falloff is weaker
+   than the replay's `a`. The replay can match that by drawing with `k * a*a*a` instead of
+   `k * a`, computed per decal from its slot opacity. The texture's own alpha still enters
+   once, so soft texture edges stay slightly stronger than the composite.
+   Needs: the replay geometry buffered so it can be drawn in reverse order (the hook already
+   computes it per decal), and stencil state set through the driver, then reset.
+2. **Exact composite through a CPU round trip.** Draw the decals at full strength over the
+   scene, read the result back with `CopyColorBuffer`, put the saved scene back with a buffer
+   region, and draw the readback at 25 percent with `BitBltAlpha` or as a texture. This gives
+   exactly the composite on every driver, but it reads a full frame back to the CPU each time
+   decals are drawn. That stalls the GPU, so it is a fallback for screenshots at most.
+3. **Plain replay** as today, when there is no stencil buffer.
+
+If option 1 holds up on all three drivers it can replace the DX7 composite as well, which
+removes the last DX7 dependency from the decal service and makes decals look the same
+everywhere.
+
 Plan for decals:
 
-- Test the decal sample on SCD3D11 and scvk and confirm the replay path runs there.
+- Test the decal sample on SCD3D11 and scvk and confirm the replay path runs there today.
+- Check that the game's depth buffer has stencil bits on the built-in DX7 driver and on scvk,
+  and that the game does not rely on stencil contents across the decal pass (so clearing it
+  there is safe).
+- Prototype option 1 behind a setting and compare it side by side with the DX7 composite.
 - Log once which shadow recovery method is in use, in plain words, so players know what to
   expect.
-- Try a stencil-based replay that needs no offscreen target. Clear stencil, draw the replay
-  with the stencil test passing only where nothing has been drawn yet and incrementing on
-  pass, so each pixel gets at most one recovery layer. Overlaps then stop darkening. This
-  needs two checks first: that the game asks for a stencil buffer on every driver, and that
-  SCD3D11 and scvk honour `StencilFunc`/`StencilOp`. If either fails, the replay stays as it
-  is.
-- Keep the DX7 composite where it is available. It is still the best looking result.
 
 ## Out of scope
 
