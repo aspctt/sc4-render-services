@@ -44,6 +44,8 @@ Functionality:
 - Create decals at runtime from a texture resource key and decal placement data.
 - Target any of the game overlay managers:
   `StaticLand`, `StaticWater`, `DynamicLand`, or `DynamicWater`.
+  Decals on the water managers are drawn by the game on the water surface, so the custom
+  renderer's UV sub-rectangles, clipping and depth offsets do not apply to them.
 - Update and remove decals by a stable service-side ID instead of directly
   tracking raw overlay IDs.
 - Persist managed decals into the city save and restore them on load.

@@ -27,6 +27,15 @@ namespace TerrainDecal
     namespace
     {
         constexpr std::ptrdiff_t kOverlayManagerDecalDrawCountOffset = 0xD8;
+        // Set on the water overlay managers. The game's DrawRect (0x00735720) then draws the
+        // decal on the water surface mesh instead of the terrain.
+        constexpr std::ptrdiff_t kOverlayManagerWaterFlagOffset = 0x16;
+
+        [[nodiscard]] bool IsWaterOverlayManager(const void* const overlayManager) noexcept
+        {
+            return overlayManager &&
+                   static_cast<const std::byte*>(overlayManager)[kOverlayManagerWaterFlagOffset] != std::byte{0};
+        }
 
         // SC4DrawContext fields (docs/world-draw-design.md).
         constexpr std::ptrdiff_t kContextDriverOffset = 0x30;
@@ -362,6 +371,15 @@ namespace TerrainDecal
             // The game draws every decal itself. Shadow recovery is off too, it needs the
             // custom renderer.
             CallOriginalDrawRect_(overlayManager, drawContext, rect);
+            return;
+        }
+
+        if (IsWaterOverlayManager(overlayManager)) {
+            // The custom renderer drapes decals over the terrain, which would put water decals
+            // such as water pollution on dry land. The game draws them on the water itself.
+            if (!shadowRecoveryActive_) {
+                CallOriginalDrawRect_(overlayManager, drawContext, rect);
+            }
             return;
         }
 
