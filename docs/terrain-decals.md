@@ -19,8 +19,8 @@ Relevant ini settings:
 ## Shadow recovery
 
 The game draws its shadows over terrain decals, which can hide them almost completely. After
-the shadow pass the service draws the decals again, faintly, so they stay visible. How it
-does that depends on the graphics driver:
+the shadow pass the service draws the decals again, faintly, so they stay visible. This needs
+`EnableCustomTerrainDecalRenderer=true`. How it does that depends on the graphics driver:
 
 | Driver | Method |
 |---|---|

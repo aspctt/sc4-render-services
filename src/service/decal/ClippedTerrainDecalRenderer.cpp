@@ -955,26 +955,32 @@ namespace TerrainDecal
         const bool shadowRecovery = request.mode != DrawMode::Normal;
 
         if (!options_.enableClippedRendering) {
-            LOG_WARN("TerrainDecalRenderer: falling through to vanilla because clipped rendering is disabled");
+            if (ShouldLogOverlayOnce(0, "disabled")) {
+                LOG_WARN("TerrainDecalRenderer: falling through to vanilla because clipped rendering is disabled");
+            }
             return DrawResult::FallThroughToVanilla;
         }
 
         if (!request.addresses || !request.terrain || !request.overlaySlotBase || !request.drawContext) {
-            LOG_WARN("TerrainDecalRenderer: falling through before draw because request is incomplete "
-                     "(addresses={}, terrain={}, slotBase={}, drawContext={})",
-                     request.addresses != nullptr,
-                     request.terrain != nullptr,
-                     request.overlaySlotBase != nullptr,
-                     request.drawContext != nullptr);
+            if (ShouldLogOverlayOnce(0, "incomplete-request")) {
+                LOG_WARN("TerrainDecalRenderer: falling through before draw because request is incomplete "
+                         "(addresses={}, terrain={}, slotBase={}, drawContext={})",
+                         request.addresses != nullptr,
+                         request.terrain != nullptr,
+                         request.overlaySlotBase != nullptr,
+                         request.drawContext != nullptr);
+            }
             return DrawResult::FallThroughToVanilla;
         }
 
         const OverlaySlotView slot = ReadOverlaySlotView(request.overlaySlotBase);
         if (slot.state != -1 || !slot.matrix) {
-            LOG_WARN("TerrainDecalRenderer: falling through because slot state/matrix is invalid "
-                     "(state={}, matrix={})",
-                     slot.state,
-                     static_cast<const void*>(slot.matrix));
+            if (ShouldLogOverlayOnce(0, "invalid-slot")) {
+                LOG_WARN("TerrainDecalRenderer: falling through because slot state/matrix is invalid "
+                         "(state={}, matrix={})",
+                         slot.state,
+                         static_cast<const void*>(slot.matrix));
+            }
             return DrawResult::FallThroughToVanilla;
         }
 
@@ -1051,8 +1057,10 @@ namespace TerrainDecal
                                                 overrides.mirror)
                 : TextureTransformOverride{};
         if (applyUvWindowToTransform && !texTransformOverride.active) {
-            LOG_WARN("TerrainDecalRenderer: UV override exists for overlay {} but transform override could not be built",
-                     overlayId);
+            if (ShouldLogOverlayOnce(overlayId, "no-transform-override")) {
+                LOG_WARN("TerrainDecalRenderer: UV override exists for overlay {} but transform override could not be built",
+                         overlayId);
+            }
             return DrawResult::FallThroughToVanilla;
         }
         if (hasUvOverride) {
@@ -1067,8 +1075,10 @@ namespace TerrainDecal
         }
         if ((applyUvWindowToTransform || hasModifiers) &&
             request.activeTexTransformStage < 0) {
-            LOG_WARN("TerrainDecalRenderer: overlay {} transform override requested but no active texture transform stage was captured",
-                     overlayId);
+            if (ShouldLogOverlayOnce(overlayId, "no-tex-stage")) {
+                LOG_WARN("TerrainDecalRenderer: overlay {} transform override requested but no active texture transform stage was captured",
+                         overlayId);
+            }
             return DrawResult::FallThroughToVanilla;
         }
 
@@ -1087,7 +1097,7 @@ namespace TerrainDecal
 
         const TerrainGridDimensions dimensions = ReadTerrainGridDimensions(*request.addresses);
         if (dimensions.cellCountX <= 0 || dimensions.cellCountZ <= 0) {
-            if (hasUvOverride || debugOverridesActive) {
+            if ((hasUvOverride || debugOverridesActive) && ShouldLogOverlayOnce(overlayId, "bad-terrain-size")) {
                 LOG_WARN("TerrainDecalRenderer: overlay {} handled with invalid terrain dimensions {}x{}",
                          overlayId,
                          dimensions.cellCountX,

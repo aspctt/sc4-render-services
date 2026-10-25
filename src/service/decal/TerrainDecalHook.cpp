@@ -60,6 +60,7 @@ namespace TerrainDecal
             kRecoveryComposite = 0,
             kRecoveryStencil = 1,
             kRecoveryReplay = 2,
+            kRecoveryOff = 3,
         };
 
         template <typename T>
@@ -356,6 +357,13 @@ namespace TerrainDecal
 
     void TerrainDecalHook::HandleDrawRectCall_(void* overlayManager, SC4DrawContext* drawContext, const cRZRect* rect)
     {
+        if (!options_.enableCustomRenderer) {
+            // The game draws every decal itself. Shadow recovery is off too, it needs the
+            // custom renderer.
+            CallOriginalDrawRect_(overlayManager, drawContext, rect);
+            return;
+        }
+
         DrawRequest request{
             .overlayManager = overlayManager,
             .drawContext = drawContext,
@@ -484,8 +492,11 @@ namespace TerrainDecal
                                                             SC4DrawContext* drawContext,
                                                             int* decalIds)
     {
-        if (!options_.enableCustomRenderer ||
-            shadowRecoveryActive_ ||
+        if (!options_.enableCustomRenderer) {
+            LogRecoveryMethod_(kRecoveryOff);
+            return;
+        }
+        if (shadowRecoveryActive_ ||
             !addresses_ ||
             !addresses_->drawDecals ||
             !overlayManager ||
@@ -790,8 +801,11 @@ namespace TerrainDecal
         case kRecoveryStencil:
             LOG_INFO("TerrainDecalHook: decals are drawn again over shadows once per pixel, using the stencil buffer");
             break;
-        default:
+        case kRecoveryReplay:
             LOG_INFO("TerrainDecalHook: decals are drawn again over shadows one by one, overlapping decals come out a little darker");
+            break;
+        default:
+            LOG_INFO("TerrainDecalHook: decals are not drawn again over shadows, because EnableCustomTerrainDecalRenderer is false");
             break;
         }
     }
