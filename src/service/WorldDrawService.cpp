@@ -75,8 +75,10 @@ namespace {
     constexpr uint32_t kBlendInvSrcAlpha = 5;
     constexpr uint32_t kBlendDstColor = 8;
 
-    // The built-in DirectX driver takes at most 65535 vertices per draw.
-    constexpr uint32_t kMaxVerticesPerDraw = 60000;
+    // The built-in DirectX driver copies each draw into a 64 KB dynamic vertex buffer
+    // (0x00889910) and silently drops a draw that does not fit (0x008899B0). With 24-byte
+    // vertices that is 2730, which is also a whole number of triangles.
+    constexpr uint32_t kMaxVerticesPerDraw = 0x10000 / sizeof(SC4WorldVertex) / 3 * 3;
 
     template <typename T>
     T& Field(void* object, const ptrdiff_t offset) {
@@ -152,8 +154,26 @@ namespace {
         void DrawIndexedTriangles(const SC4WorldStyle& style, const SC4WorldVertex* vertices,
                                   const uint32_t vertexCount, const uint16_t* indices,
                                   const uint32_t indexCount) override {
-            if (!vertices || !indices || indexCount < 3 || vertexCount == 0 || vertexCount > 65535 || !driver_ ||
-                !ApplyStyle_(style)) {
+            if (!vertices || !indices || indexCount < 3 || vertexCount == 0 || vertexCount > 65535 || !driver_) {
+                return;
+            }
+            if (vertexCount > kMaxVerticesPerDraw) {
+                // Too many vertices for one draw on the built-in driver. Draw plain triangles
+                // instead, which can be split.
+                scratch_.clear();
+                scratch_.reserve(indexCount);
+                for (uint32_t i = 0; i + 2 < indexCount; i += 3) {
+                    if (indices[i] >= vertexCount || indices[i + 1] >= vertexCount || indices[i + 2] >= vertexCount) {
+                        continue;
+                    }
+                    scratch_.push_back(vertices[indices[i]]);
+                    scratch_.push_back(vertices[indices[i + 1]]);
+                    scratch_.push_back(vertices[indices[i + 2]]);
+                }
+                DrawTriangles(style, scratch_.data(), static_cast<uint32_t>(scratch_.size()));
+                return;
+            }
+            if (!ApplyStyle_(style)) {
                 return;
             }
             // SC4DrawContext::DrawPrims only forwards to these two driver calls, so calling them

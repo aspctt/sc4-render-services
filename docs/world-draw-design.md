@@ -299,6 +299,14 @@ through: `driver->InterleavedArrays(format, 0, vertices)` and then
 driver accepts works, including `0x0A` (24 bytes, colour at 12, UV at 16), which the ImGui
 renderer already validates at start-up. `SC4WorldVertex` is laid out to match it.
 
+**Batch size on the built-in DX7 driver.** Its `DrawArrays` (`0x008857E0`) copies the vertices
+into a dynamic vertex buffer through `cD3DXContext::DrawPrimitive` (`0x00889E00`). That buffer
+is 64 KB (`0x10000 / stride`, set at `0x00889910`), and `Reserve` (`0x008899B0`) returns null
+for a draw that does not fit, which drops it with no error. With the 24-byte world vertex,
+that limit is 2730 vertices per draw. World draws are split into batches of at most that size.
+SCD3D11 and scvk have no such limit. Found when the larger showcase layers were missing on
+DX7 only.
+
 **State goes to the driver at once.** The flag setters write to the driver immediately and
 only skip the call when the cached flag already matches:
 - `EnableDepthTestFlag` (`0x007D27B0`): `Enable/Disable(1)`, flag `0x4`
