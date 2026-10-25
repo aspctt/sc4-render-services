@@ -271,8 +271,8 @@ with the first texture it creates and only runs the per-frame lost-texture check
 driver passes.
 
 Verified in game on scvk 0.3.0-rc.1 (main menu and region view, docked demo windows, ~1,950
-fps). On SCD3D11 the main menu, demo windows, docking and mouse input were verified with the
-earlier `TexImage2D` creation path; the `CreateTexture` path still needs a run there.
+fps) and on SCD3D11 (main menu, demo windows, docking, mouse input; rechecked after the switch
+to `CreateTexture`).
 
 Device loss: SCD3D11 recreates textures after device removal with their names and sizes but
 **blank contents**, so `IsTexture` stays true and the backend's per-frame `IsTexture` check
