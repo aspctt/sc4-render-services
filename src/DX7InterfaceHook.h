@@ -5,7 +5,7 @@
 
 // Captures the native DirectX driver's D3DX object for the DX7 consumers that still need
 // it (terrain decal shadow recovery, AcquireD3DInterfaces). ImGui no longer renders
-// through DX7; it draws through cIGZGDriver.
+// through DX7. It draws through cIGZGDriver.
 class DX7InterfaceHook
 {
 public:

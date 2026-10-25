@@ -15,8 +15,10 @@
 //  [ ] Renderer: Multi-viewport support. cIGZGDriver only draws into the game window.
 //
 // Call order each frame, at the game's present (just before cIGZGDriver::Flush):
-//   ImGui_ImplWin32_NewFrame(); ImGui_ImplGZGDriver_NewFrame(driver); ImGui::NewFrame();
-//   ... ImGui::Render(); ImGui_ImplGZGDriver_RenderDrawData(ImGui::GetDrawData());
+//   1. ImGui_ImplWin32_NewFrame()
+//   2. ImGui_ImplGZGDriver_NewFrame(driver)
+//   3. ImGui::NewFrame(), then the frame's ImGui calls, then ImGui::Render()
+//   4. ImGui_ImplGZGDriver_RenderDrawData(ImGui::GetDrawData())
 // Everything here must run on the thread that renders, inside that window.
 
 #pragma once
@@ -38,9 +40,9 @@ struct ImGui_ImplGZGDriver_RenderState
 bool ImGui_ImplGZGDriver_Init(cIGZGDriver* driver);
 // Forgets every texture without calling the driver, which may already be gone at shutdown.
 void ImGui_ImplGZGDriver_Shutdown();
-// The driver can change across video mode changes; textures made with an earlier one are
-// forgotten and recreated. Saves the game's texture bindings, so call this before anything
-// in the frame can create a texture.
+// The driver object can change when the video mode changes. Textures made with an earlier
+// one are then forgotten and recreated. Saves the game's texture bindings, so call this
+// before anything in the frame can create a texture.
 void ImGui_ImplGZGDriver_NewFrame(cIGZGDriver* driver);
 void ImGui_ImplGZGDriver_RenderDrawData(ImDrawData* draw_data);
 

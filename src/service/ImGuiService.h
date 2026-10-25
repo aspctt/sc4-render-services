@@ -24,7 +24,7 @@ struct ImGuiInitSettings
     std::string theme = "dark";     // dark, light, classic
     bool keyboardNav = true;
     float uiScale = 1.0f;
-    std::string layoutFile;         // Absolute path of the ImGui layout .ini; empty = don't save
+    std::string layoutFile;         // Absolute path of the ImGui layout .ini. Empty means it is not saved.
 };
 
 // ReSharper disable once CppPolymorphicClassWithNonVirtualPublicDestructor
@@ -104,7 +104,7 @@ private:
         uint32_t height;
         uint32_t creationGeneration;
         std::vector<uint8_t> sourceData;       // RGBA32 pixel data for recreation
-        uint32_t driverTexture;                // cIGZGDriver texture name; 0 until created
+        uint32_t driverTexture;                // cIGZGDriver texture name, 0 until created
         bool needsRecreation;
         bool pendingDestroy;
 

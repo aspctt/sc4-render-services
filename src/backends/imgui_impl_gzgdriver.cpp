@@ -10,7 +10,7 @@
 #include <cstddef>
 
 namespace {
-    // cIGZGDriver vocabulary. The interface takes plain integers; these are the values the
+    // cIGZGDriver vocabulary. The interface takes plain integers. These are the values the
     // game and every driver agree on (see docs/generic-backend-re.md).
     constexpr uint32_t kVertexFormat_V3F_C4UB_T2F = 10;
     constexpr uint32_t kElementType_Vertices = 0;
@@ -35,7 +35,7 @@ namespace {
     constexpr uint32_t kMatrix_ModelView = 0;
     constexpr uint32_t kMatrix_Projection = 1;
 
-    // The built-in DirectX 7 driver is bound by D3D7's limit; later drivers allow more, but
+    // The built-in DirectX 7 driver is bound by D3D7's limit. Later drivers allow more, but
     // ImGui never needs more than this for its atlas.
     constexpr auto kMaxTextureSize = 2048;
 
@@ -68,7 +68,7 @@ namespace {
                    : nullptr;
     }
 
-    // ImGui packs colors as R,G,B,A bytes (0xAABBGGRR); the driver wants B,G,R,A (0xAARRGGBB).
+    // ImGui packs colors as R,G,B,A bytes (0xAABBGGRR). The driver wants B,G,R,A (0xAARRGGBB).
     inline uint32_t RgbaToBgra(const uint32_t c) {
         return (c & 0xFF00FF00u) | ((c & 0x000000FFu) << 16) | ((c >> 16) & 0x000000FFu);
     }
@@ -115,10 +115,10 @@ namespace {
         // The game's own texture path, which every driver implements: CreateTexture allocates
         // and returns the name, LoadTextureLevel fills it. scvk implements neither GenTextures
         // nor TexImage2D, and the built-in driver's TexImage2D cannot take null pixels.
-        // SCD3D11 and scvk bind the new texture to the active stage; RenderDrawData restores
+        // SCD3D11 and scvk bind the new texture to the active stage. RenderDrawData restores
         // the game's bindings afterwards.
-        // Success is judged by the result and GetError, which every driver reads and clears;
-        // the built-in driver returns a name even when allocation fails. Reading it first
+        // Success is judged by the result and GetError, which every driver reads and clears.
+        // The built-in driver returns a name even when allocation fails. Reading it first
         // also consumes an error the game left pending, which it never checks across frames.
         cIGZGDriver* driver = bd->Driver;
         driver->GetError();
@@ -137,8 +137,9 @@ namespace {
             bd->IsTextureProbed = true;
             bd->IsTextureReliable = driver->IsTexture(texture);
             if (!bd->IsTextureReliable) {
-                LOG_WARN("imgui_impl_gzgdriver: the driver's IsTexture does not recognize its own textures; "
-                         "lost textures will not be detected");
+                LOG_WARN("ImGui: this graphics driver cannot tell whether its textures still exist. If it ever "
+                         "loses them, for example after switching away from the game, ImGui text may look wrong "
+                         "until the game is restarted.");
             }
         }
 
@@ -178,7 +179,7 @@ namespace {
         driver->EnableVertexColors(true, true);
         driver->PolygonOffset(0);
 
-        // Model-view stays identity; each clip rectangle loads its own projection.
+        // Model-view stays identity. Each clip rectangle loads its own projection.
         driver->MatrixMode(kMatrix_ModelView);
         driver->LoadIdentity();
         driver->MatrixMode(kMatrix_Projection);
@@ -233,7 +234,8 @@ namespace {
                 // Stays WantCreate, so the next frame retries.
                 static bool s_logged = false;
                 if (!s_logged) {
-                    LOG_ERROR("imgui_impl_gzgdriver: failed to create a {}x{} texture", tex->Width, tex->Height);
+                    LOG_ERROR("ImGui: the graphics driver could not create a {}x{} texture, so ImGui text may "
+                              "be missing. It will keep trying.", tex->Width, tex->Height);
                     s_logged = true;
                 }
                 return;
@@ -295,8 +297,9 @@ bool ImGui_ImplGZGDriver_Init(cIGZGDriver* driver) {
     const uint32_t posOffset = driver->VertexFormatElementOffset(kVertexFormat_V3F_C4UB_T2F, kElementType_Vertices, 0);
     if (stride != sizeof(GZVertex) || posOffset != offsetof(GZVertex, x) ||
         colorOffset != offsetof(GZVertex, bgra) || uvOffset != offsetof(GZVertex, u)) {
-        LOG_ERROR("imgui_impl_gzgdriver: driver vertex format 10 is stride {} pos {} color {} uv {}, expected 24/0/12/16",
-                  stride, posOffset, colorOffset, uvOffset);
+        LOG_ERROR("ImGui: this graphics driver lays out its vertices differently than expected (stride {}, "
+                  "position {}, color {}, texture coordinates {}, expected 24, 0, 12 and 16), so ImGui cannot "
+                  "draw with it.", stride, posOffset, colorOffset, uvOffset);
         return false;
     }
 
@@ -407,7 +410,7 @@ void ImGui_ImplGZGDriver_RenderDrawData(ImDrawData* draw_data) {
     bool texture_bound = false;  // 0 is a valid binding too, so track "never bound" apart
 
     for (const ImDrawList* draw_list : draw_data->CmdLists) {
-        // One conversion per list; every command then points into it.
+        // Convert each list once. Every command then points into it.
         const int vtx_count = draw_list->VtxBuffer.Size;
         bd->Vertices.resize(vtx_count);
         GZVertex* dst = bd->Vertices.Data;

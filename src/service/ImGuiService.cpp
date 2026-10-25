@@ -32,8 +32,8 @@ namespace {
 
     // The per-frame present at the end of cGZGraphicSystem::Draw (docs/generic-backend-re.md):
     //   0098e765  8b 10              mov  edx, [eax]
-    //   0098e767  8b c8              mov  ecx, eax              ; cIGZGDriver*
-    //   0098e769  ff 92 ac 00 00 00  call [edx+0xac]            ; Flush()  <-- call FlushHook_; nop
+    //   0098e767  8b c8              mov  ecx, eax              <- ecx is the cIGZGDriver
+    //   0098e769  ff 92 ac 00 00 00  call [edx+0xac]            <- Flush(), patched to call FlushHook_ + nop
     //   0098e76f  88 5e 26           mov  [esi+0x26], bl
     constexpr uintptr_t kFlushCallGuardAddress = 0x0098E765;
     constexpr uintptr_t kFlushCallSiteAddress = 0x0098E769;
@@ -374,7 +374,7 @@ void ImGuiService::RenderOverlay_(cIGZGDriver* driver) {
             rendererReady_ = ImGui_ImplGZGDriver_Init(driver);
             if (!rendererReady_) {
                 if (!rendererFailed_) {
-                    LOG_ERROR("ImGuiService: this graphics driver cannot run the ImGui renderer; ImGui stays hidden");
+                    LOG_ERROR("ImGuiService: ImGui cannot draw with this graphics driver, so ImGui windows will not be shown");
                     rendererFailed_ = true;
                 }
                 return;
@@ -410,7 +410,7 @@ void ImGuiService::RenderOverlay_(cIGZGDriver* driver) {
         }
     }
 
-    // How often the game presents decides how often ImGui updates; report it once.
+    // How often the game presents decides how often ImGui updates. Report it once.
     static ULONGLONG s_firstFrameTick = 0;
     static uint32_t s_frames = 0;
     if (s_firstFrameTick != ~0ull) {
@@ -451,7 +451,8 @@ bool ImGuiService::InstallFlushHook_() {
 
     auto* guard = reinterpret_cast<uint8_t*>(kFlushCallGuardAddress);
     if (std::memcmp(guard, kFlushCallGuardBytes, sizeof(kFlushCallGuardBytes)) != 0) {
-        LOG_ERROR("ImGuiService: unexpected bytes at the frame present (0x{:08X}); another plugin may have patched it",
+        LOG_ERROR("ImGuiService: cannot attach to the game's frame drawing because the code at 0x{:08X} is not what "
+                  "SC4RenderServices expects. Another plugin has probably changed it. ImGui windows will not be shown.",
                   static_cast<uint32_t>(kFlushCallGuardAddress));
         return false;
     }
@@ -465,7 +466,8 @@ bool ImGuiService::InstallFlushHook_() {
     auto* site = reinterpret_cast<uint8_t*>(kFlushCallSiteAddress);
     DWORD oldProtect = 0;
     if (!VirtualProtect(site, sizeof(patch), PAGE_EXECUTE_READWRITE, &oldProtect)) {
-        LOG_ERROR("ImGuiService: VirtualProtect failed for the frame present hook");
+        LOG_ERROR("ImGuiService: Windows did not allow attaching to the game's frame drawing (VirtualProtect failed). "
+                  "ImGui windows will not be shown.");
         return false;
     }
     std::memcpy(site, patch, sizeof(patch));
@@ -473,7 +475,7 @@ bool ImGuiService::InstallFlushHook_() {
     VirtualProtect(site, sizeof(patch), oldProtect, &oldProtect);
 
     flushHookInstalled_ = true;
-    LOG_INFO("ImGuiService: hooked the frame present at 0x{:08X}", static_cast<uint32_t>(kFlushCallSiteAddress));
+    LOG_INFO("ImGuiService: attached to the game's frame drawing at 0x{:08X}", static_cast<uint32_t>(kFlushCallSiteAddress));
     return true;
 }
 
@@ -484,14 +486,15 @@ void ImGuiService::RemoveFlushHook_() {
 
     auto* site = reinterpret_cast<uint8_t*>(kFlushCallSiteAddress);
     if (site[0] != 0xE8) {
-        LOG_WARN("ImGuiService: frame present hook was overwritten by another module, leaving it");
+        LOG_WARN("ImGuiService: another plugin changed the game's frame drawing after SC4RenderServices attached to it, "
+                 "so it is left as it is");
         flushHookInstalled_ = false;
         return;
     }
 
     DWORD oldProtect = 0;
     if (!VirtualProtect(site, sizeof(kFlushCallOriginalBytes), PAGE_EXECUTE_READWRITE, &oldProtect)) {
-        LOG_ERROR("ImGuiService: VirtualProtect failed while removing the frame present hook");
+        LOG_ERROR("ImGuiService: could not detach from the game's frame drawing (VirtualProtect failed)");
         return;
     }
     std::memcpy(site, kFlushCallOriginalBytes, sizeof(kFlushCallOriginalBytes));
@@ -645,7 +648,8 @@ bool ImGuiService::EnsureInitialized_() {
         LOG_WARN("ImGuiService: failed to install WndProc hook");
     }
     if (!InstallFlushHook_()) {
-        LOG_ERROR("ImGuiService: ImGui context created, but without the frame hook nothing will be drawn");
+        LOG_ERROR("ImGuiService: ImGui is set up, but it could not attach to the game's frame drawing, so ImGui "
+                  "windows will not be shown");
         return true;
     }
     LOG_INFO("ImGuiService: ImGui context created");
@@ -947,7 +951,7 @@ void* ImGuiService::GetTextureID(const ImGuiTextureHandle handle) {
         return nullptr;
     }
 
-    // A driver may drop textures (device loss); recreate from the kept pixels.
+    // A driver may drop textures when the device is lost. Recreate them from the kept pixels.
     if (tex.driverTexture != 0 && inFrame_ && !ImGui_ImplGZGDriver_IsTextureAlive(tex.driverTexture)) {
         tex.driverTexture = 0;
         tex.needsRecreation = true;
