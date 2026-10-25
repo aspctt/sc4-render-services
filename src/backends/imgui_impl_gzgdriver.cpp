@@ -22,7 +22,6 @@ namespace {
     constexpr uint32_t kTextureTarget_2D = 0;
     constexpr int32_t kInternalFormat_RGBA8 = 4;
     constexpr uint32_t kTexFormat_BGRA = 3;
-    constexpr uint32_t kPixelStore_RowLength = 0;
     constexpr uint32_t kTexParam_MagFilter = 0;
     constexpr uint32_t kTexParam_MinFilter = 1;
     constexpr uint32_t kTexParam_WrapU = 2;
@@ -59,6 +58,8 @@ namespace {
         int FramebufferHeight = 0;
         intptr_t SavedTexture[2] = {0, 0};
         bool TexturesSaved = false;
+        bool IsTextureProbed = false;   // Checked against the first texture this driver creates.
+        bool IsTextureReliable = false;
     };
 
     ImGui_ImplGZGDriver_Data* GetBackendData() {
@@ -111,24 +112,37 @@ namespace {
         if (w <= 0 || h <= 0 || w > kMaxTextureSize || h > kMaxTextureSize) {
             return 0;
         }
+        // The game's own texture path, which every driver implements: CreateTexture allocates
+        // and returns the name, LoadTextureLevel fills it. scvk implements neither GenTextures
+        // nor TexImage2D, and the built-in driver's TexImage2D cannot take null pixels.
+        // SCD3D11 and scvk bind the new texture to the active stage; RenderDrawData restores
+        // the game's bindings afterwards.
+        // Success is judged by the result and GetError, which every driver reads and clears;
+        // the built-in driver returns a name even when allocation fails. Reading it first
+        // also consumes an error the game left pending, which it never checks across frames.
         cIGZGDriver* driver = bd->Driver;
-        uint32_t texture = 0;
-        driver->GenTextures(1, &texture);
-        if (texture == 0) {
+        driver->GetError();
+        auto texture = static_cast<uint32_t>(driver->CreateTexture(kInternalFormat_RGBA8, static_cast<uint32_t>(w),
+                                                                   static_cast<uint32_t>(h), 1, 0));
+        if (driver->GetError() != 0 || texture == 0) {
+            if (texture != 0) {
+                driver->DeleteTextures(1, &texture);
+            }
             return 0;
         }
-        // TexImage2D uploads through the bound texture and must get real pixels: the built-in
-        // driver loads the level without checking for null. Row length 0 means tightly packed.
-        const uint32_t* bgra = StageBgra(bd, pixels, w, h, pitch);
-        driver->TexStage(0);
-        driver->BindTexture(kTextureTarget_2D, texture);
-        driver->PixelStore(kPixelStore_RowLength, 0);
-        driver->TexImage2D(kTextureTarget_2D, 0, kInternalFormat_RGBA8, w, h, 0, kTexFormat_BGRA,
-                           kType_UnsignedByte, bgra);
-        if (!driver->IsTexture(texture)) {
-            driver->DeleteTextures(1, &texture);
-            return 0;
+
+        // IsTexture is only trusted if it recognizes a texture that was just created: scvk 0.2.2
+        // answers from GenTextures' name space, which CreateTexture does not use.
+        if (!bd->IsTextureProbed) {
+            bd->IsTextureProbed = true;
+            bd->IsTextureReliable = driver->IsTexture(texture);
+            if (!bd->IsTextureReliable) {
+                LOG_WARN("imgui_impl_gzgdriver: the driver's IsTexture does not recognize its own textures; "
+                         "lost textures will not be detected");
+            }
         }
+
+        UploadRect(bd, texture, 0, 0, w, h, pixels, pitch);
         return texture;
     }
 
@@ -322,14 +336,18 @@ void ImGui_ImplGZGDriver_NewFrame(cIGZGDriver* driver) {
         // Textures belong to the old driver, which may be gone: forget them, never delete them.
         ForgetTextures();
         bd->Driver = driver;
+        bd->IsTextureProbed = false;
+        bd->IsTextureReliable = false;
     }
 
     // A driver may drop textures (e.g. on device loss). Hand those back to ImGui, which recreates
     // them from the pixels it keeps.
-    for (ImTextureData* tex : ImGui::GetPlatformIO().Textures) {
-        if (tex->Status == ImTextureStatus_OK && !driver->IsTexture(static_cast<uint32_t>(tex->TexID))) {
-            tex->SetTexID(ImTextureID_Invalid);
-            tex->SetStatus(ImTextureStatus_Destroyed);
+    if (bd->IsTextureReliable) {
+        for (ImTextureData* tex : ImGui::GetPlatformIO().Textures) {
+            if (tex->Status == ImTextureStatus_OK && !driver->IsTexture(static_cast<uint32_t>(tex->TexID))) {
+                tex->SetTexID(ImTextureID_Invalid);
+                tex->SetStatus(ImTextureStatus_Destroyed);
+            }
         }
     }
 
@@ -386,6 +404,7 @@ void ImGui_ImplGZGDriver_RenderDrawData(ImDrawData* draw_data) {
     const int fb_h = bd->FramebufferHeight;
     int last_clip[4] = {-1, -1, -1, -1};
     ImTextureID last_texture = ImTextureID_Invalid;
+    bool texture_bound = false;  // 0 is a valid binding too, so track "never bound" apart
 
     for (const ImDrawList* draw_list : draw_data->CmdLists) {
         // One conversion per list; every command then points into it.
@@ -410,7 +429,7 @@ void ImGui_ImplGZGDriver_RenderDrawData(ImDrawData* draw_data) {
                 }
                 // A callback may have changed anything, so issue everything again.
                 last_clip[0] = -1;
-                last_texture = ImTextureID_Invalid;
+                texture_bound = false;
                 last_vtx_offset = ~0u;
                 continue;
             }
@@ -442,9 +461,10 @@ void ImGui_ImplGZGDriver_RenderDrawData(ImDrawData* draw_data) {
             }
 
             const ImTextureID texture = cmd.GetTexID();
-            if (texture != last_texture) {
+            if (!texture_bound || texture != last_texture) {
                 driver->SetTexture(static_cast<uint32_t>(texture), 0);
                 last_texture = texture;
+                texture_bound = true;
             }
 
             if (cmd.VtxOffset != last_vtx_offset) {
@@ -478,5 +498,9 @@ void ImGui_ImplGZGDriver_DestroyTexture(uint32_t texture) {
 
 bool ImGui_ImplGZGDriver_IsTextureAlive(const uint32_t texture) {
     ImGui_ImplGZGDriver_Data* bd = GetBackendData();
-    return bd && texture != 0 && bd->Driver->IsTexture(texture);
+    if (!bd || texture == 0) {
+        return false;
+    }
+    // Without a trustworthy IsTexture, assume a texture lives until it is destroyed.
+    return !bd->IsTextureReliable || bd->Driver->IsTexture(texture);
 }

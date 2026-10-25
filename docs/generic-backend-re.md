@@ -257,6 +257,23 @@ modulate; primitive 0 = triangles; index type 3 = `uint16`; blend 4/5 = SrcAlpha
 `InterleavedArrays` stride 0 = packed. Format 10 is position@0, BGRA@12, UV@16, stride 24;
 the backend checks this through `VertexFormatStride`/`VertexFormatElementOffset` at init.
 
+Texture creation uses the game's own path, `CreateTexture(RGBA8, w, h, 1, 0)` +
+`LoadTextureLevel`. Native: `cGDriver::CreateTexture` `0x00882FF0` (`+0xF0`) allocates through
+`cTextureManager::CreateTexure` and returns the name even on failure, setting error 3, so
+success is judged by the result plus `GetError()`. `GetError` reads and clears on all three
+drivers (native `0x00882000`: `mov eax,[ecx+110h]; mov dword [ecx+110h],0`). Avoid
+`GenTextures`/`BindTexture`/`TexImage2D`/`PixelStore`: scvk does not implement them (0.2.2
+hands out empty names, `main` hands out none) because the game never calls them.
+
+`IsTexture` is not trusted blindly. scvk 0.2.2 answers it from `GenTextures`' name space, so it
+denies every `CreateTexture` handle; 0.3.0-rc.1 recognizes them. The backend probes it once
+with the first texture it creates and only runs the per-frame lost-texture check when the
+driver passes.
+
+Verified in game on scvk 0.3.0-rc.1 (main menu and region view, docked demo windows, ~1,950
+fps). On SCD3D11 the main menu, demo windows, docking and mouse input were verified with the
+earlier `TexImage2D` creation path; the `CreateTexture` path still needs a run there.
+
 Device loss: SCD3D11 recreates textures after device removal with their names and sizes but
 **blank contents**, so `IsTexture` stays true and the backend's per-frame `IsTexture` check
 cannot see it. There is no driver-neutral notification. Correction: the `0x4FA845B` /
