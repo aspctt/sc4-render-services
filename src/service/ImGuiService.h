@@ -12,6 +12,7 @@
 #include <Windows.h>
 
 #include "cRZBaseSystemService.h"
+#include "GraphicsDriverIdentification.h"
 #include "public/cIGZImGuiService.h"
 
 class cIGZGDriver;
@@ -65,6 +66,8 @@ public:
     bool RegisterFont(uint32_t fontId, const void* compressedFontData, int compressedFontDataSize, float sizePixels) override;
     bool UnregisterFont(uint32_t fontId) override;
     [[nodiscard]] void* GetFont(uint32_t fontId) const override;
+
+    bool GetActiveDriverInfo(SC4GraphicsDriverInfo& out) const override;
 
     template <typename Fn>
     bool QueueRenderLambda(Fn&& fn) {
@@ -143,6 +146,8 @@ private:
     // when no frame was built, in which case there is nothing to render.
     bool BuildFrame_();
     void ResyncGameStateCache_();
+    // Identifies the driver once per driver object and logs it.
+    const IdentifiedGraphicsDriver& IdentifyDriver_(cIGZGDriver* driver) const;
     bool InstallFlushHook_();
     void RemoveFlushHook_();
     bool EnsureInitialized_();
@@ -186,6 +191,8 @@ private:
     std::atomic<bool> initialized_;
     std::atomic<bool> imguiInitialized_;
     cIGZGDriver* rendererDriver_;
+    mutable cIGZGDriver* identifiedDriver_;
+    mutable IdentifiedGraphicsDriver driverInfo_;
     bool rendererReady_;
     bool rendererFailed_;
     bool flushHookInstalled_;

@@ -34,6 +34,7 @@ namespace {
 
     struct DemoPanelState {
         bool showDemoWindow;
+        const cIGZImGuiService* service;
     };
 
     std::wstring GetModulePath(HMODULE moduleHandle) {
@@ -289,6 +290,7 @@ private:
         desc.visible = true;
         desc.on_render = &RenderServicesDirector::RenderDemoPanel_;
         desc.on_shutdown = &RenderServicesDirector::OnDemoPanelShutdown_;
+        demoPanelState_.service = &imguiService_;
         desc.data = &demoPanelState_;
 
         if (imguiService_.RegisterPanel(desc)) {
@@ -310,6 +312,13 @@ private:
             ImGui::Separator();
             ImGui::Text("Version: %s", SC4RS_PRODUCT_VERSION_STR);
             ImGui::TextUnformatted("ImGui is active and the service is running.");
+            SC4GraphicsDriverInfo driver{};
+            if (state->service && state->service->GetActiveDriverInfo(driver)) {
+                ImGui::Text("Graphics driver: %s", driver.name);
+                if (*driver.modulePath && ImGui::IsItemHovered()) {
+                    ImGui::SetTooltip("%s", driver.modulePath);
+                }
+            }
             ImGui::Spacing();
             ImGui::Checkbox("Show DearImGui demo window", &state->showDemoWindow);
         }

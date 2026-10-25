@@ -1,6 +1,7 @@
 #pragma once
 
 #include "cIGZUnknown.h"
+#include "GraphicsDriverInfo.h"
 
 /// Panel descriptor for ImGui-managed panels.
 struct ImGuiPanelDesc
@@ -130,4 +131,9 @@ public:
 
     /// Gets the ImFont* for a registered font ID, or nullptr if not found.
     [[nodiscard]] virtual void* GetFont(uint32_t fontId) const = 0;
+
+    /// Describes the graphics driver the game is drawing with (API 5).
+    /// Returns false while the game has not created its driver yet. The strings stay valid until
+    /// the driver changes or the service shuts down.
+    virtual bool GetActiveDriverInfo(SC4GraphicsDriverInfo& out) const = 0;
 };

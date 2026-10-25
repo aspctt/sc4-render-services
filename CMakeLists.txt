@@ -177,6 +177,7 @@ set(CUSTOM_SERVICES_SOURCES
         ${SC4RS_ROOT}/src/service/decal/TerrainDecalSymbols.cpp
         ${SC4RS_ROOT}/src/service/decal/TerrainDecalHook.cpp
         ${SC4RS_ROOT}/src/service/RenderServicesDirector.cpp
+        ${SC4RS_ROOT}/src/service/GraphicsDriverIdentification.cpp
         ${SC4RS_ROOT}/src/utils/VersionDetection.cpp
         ${SC4RS_ROOT}/src/utils/Logger.cpp
         ${SC4RS_ROOT}/src/utils/Settings.cpp

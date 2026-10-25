@@ -77,6 +77,7 @@ ImGuiService::ImGuiService()
       , initialized_(false)
       , imguiInitialized_(false)
       , rendererDriver_(nullptr)
+      , identifiedDriver_(nullptr)
       , rendererReady_(false)
       , rendererFailed_(false)
       , flushHookInstalled_(false)
@@ -379,11 +380,12 @@ void ImGuiService::RenderOverlay_(cIGZGDriver* driver) {
                 }
                 return;
             }
-            LOG_INFO("ImGuiService: ImGui renderer ready on driver clsid=0x{:08X}", driver->GetGZCLSID());
+            LOG_INFO("ImGuiService: ImGui is ready and draws through {}", IdentifyDriver_(driver).name);
         }
         else {
             // A new driver object (video mode change): its textures are not the old ones.
-            LOG_INFO("ImGuiService: graphics driver changed, recreating textures");
+            IdentifyDriver_(driver);
+            LOG_INFO("ImGuiService: the game switched to a new graphics driver object, recreating ImGui textures");
             OnDeviceLost_();
             OnDeviceRestored_();
         }
@@ -753,11 +755,39 @@ void ImGuiService::DestroyContext_() {
 void ImGuiService::CaptureD3DX_() {
     // DX7 consumers (terrain decals, AcquireD3DInterfaces) read the native driver's D3DX
     // object. ImGui itself does not need it.
+    // Only the built-in driver has that object. SCD3D11 reports the same class ID, so the class
+    // ID alone would read an unrelated field of its driver.
     cIGZGraphicSystem2Ptr pGS2;
     cIGZGDriver* const pDriver = pGS2 ? pGS2->GetGDriver() : nullptr;
-    if (pDriver && pDriver->GetGZCLSID() == kSCGDriverDirectX) {
+    if (pDriver && IdentifyDriver_(pDriver).kind == SC4GraphicsDriverKind::BuiltInDirectX) {
         DX7InterfaceHook::CaptureInterface(pDriver);
     }
+}
+
+const IdentifiedGraphicsDriver& ImGuiService::IdentifyDriver_(cIGZGDriver* driver) const {
+    if (driver != identifiedDriver_) {
+        identifiedDriver_ = driver;
+        driverInfo_ = IdentifyGraphicsDriver(driver);
+        if (driver) {
+            LOG_INFO("ImGuiService: the game is drawing with {} (class ID 0x{:08X}, {})", driverInfo_.name,
+                     driverInfo_.classId, driverInfo_.modulePath.empty() ? "module unknown" : driverInfo_.modulePath);
+        }
+    }
+    return driverInfo_;
+}
+
+bool ImGuiService::GetActiveDriverInfo(SC4GraphicsDriverInfo& out) const {
+    cIGZGraphicSystem2Ptr pGS2;
+    cIGZGDriver* const pDriver = pGS2 ? pGS2->GetGDriver() : nullptr;
+    if (!pDriver) {
+        return false;
+    }
+    const IdentifiedGraphicsDriver& info = IdentifyDriver_(pDriver);
+    out.kind = info.kind;
+    out.classId = info.classId;
+    out.name = info.name;
+    out.modulePath = info.modulePath.c_str();
+    return true;
 }
 
 void ImGuiService::InitializePanels_() {
