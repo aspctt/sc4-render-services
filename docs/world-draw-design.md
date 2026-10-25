@@ -221,17 +221,25 @@ Options, best first:
    decals are drawn. That stalls the GPU, so it is a fallback for screenshots at most.
 3. **Plain replay** as today, when there is no stencil buffer.
 
-If option 1 holds up on all three drivers it can replace the DX7 composite as well, which
-removes the last DX7 dependency from the decal service and makes decals look the same
-everywhere.
+The Ghidra checks (below) settle which driver gets what. The game never uses stencil, so
+clearing it is safe. But only SCD3D11 actually has a stencil buffer:
+
+| Driver | Shadow recovery |
+|---|---|
+| Built-in DX7 | composite, as today (its depth buffer normally has no stencil) |
+| SCD3D11 | stencil replay (falls back to plain replay on a device without `D24S8`) |
+| scvk 0.3.0 | plain replay (no stencil buffer, stencil calls do nothing) |
+
+The stencil replay goes through the driver on every driver anyway. Where stencil is missing,
+it simply turns into the plain replay. If scvk ever adds a stencil buffer, it gets the better
+look without any change in RS.
 
 Plan for decals:
 
 - Test the decal sample on SCD3D11 and scvk and confirm the replay path runs there today.
-- Check that the game's depth buffer has stencil bits on the built-in DX7 driver and on scvk,
-  and that the game does not rely on stencil contents across the decal pass (so clearing it
-  there is safe).
-- Prototype option 1 behind a setting and compare it side by side with the DX7 composite.
+- Prototype the stencil replay behind a setting on SCD3D11 and compare it side by side with
+  the DX7 composite.
+- Test with SCD3D11's and scvk's own live shadows turned on.
 - Log once which shadow recovery method is in use, in plain words, so players know what to
   expect.
 
@@ -278,12 +286,72 @@ Each step is checked in game on the built-in DirectX driver, SCD3D11 and scvk:
 - nothing else in the scene changes: no stray transforms on buildings, no lost fog, no
   texture left bound on the UI
 
-## Open checks before coding
+## Checks done in Ghidra
 
-- Which `SC4DrawContext` vertex format takes position, colour and UV. Format `0x0A` (24
-  bytes, colour at 12, UV at 16) is what the ImGui renderer uses with the driver directly.
-  Confirm the draw context accepts it, or use the decal format `0x0B`.
-- That turning texturing off through the draw context really disables stage 0 on all three
-  drivers, so untextured batches don't pick up the last bound texture.
-- Whether fog through `SetFog` matches the scene's fog without RS supplying colour and range,
-  or whether those have to be read from the game.
+All in `SimCity 4.exe`. Draw context methods are `__thiscall` on `SC4DrawContext`, whose
+driver pointer sits at `+0x30` and whose cached state flags sit at `+0x80`. Driver vtable
+offsets follow `cIGZGDriver.h` (`DrawArrays` `0x0C`, `InterleavedArrays` `0x14`, `Fog`
+`0x78`/`0x7C`, `Enable` `0xB0`, `Disable` `0xB4`, `TexStage` `0xCC`).
+
+**Vertex format.** `SC4DrawContext::DrawPrims` (`0x007D2990`, `RET 0x10`) is a plain pass
+through: `driver->InterleavedArrays(format, 0, vertices)` and then
+`driver->DrawArrays(prim, 0, count)`. It applies no state of its own, so any format the
+driver accepts works, including `0x0A` (24 bytes, colour at 12, UV at 16), which the ImGui
+renderer already validates at start-up. `SC4WorldVertex` is laid out to match it.
+
+**State goes to the driver at once.** The flag setters write to the driver immediately and
+only skip the call when the cached flag already matches:
+- `EnableDepthTestFlag` (`0x007D27B0`): `Enable/Disable(1)`, flag `0x4`
+- `EnableDepthMaskFlag` (`0x007D2800`): `DepthMask`, flag `0x2`
+- `EnableBlendStateFlag` (`0x007D4010`): `Enable/Disable(4)`, flag `0x10`. Enabling is skipped
+  when a byte at `[[ctx+0x38]+0x0C]+0xFC` is set, which looks like a global "no blending"
+  option.
+- `EnableTextureStateFlag` (`0x007D3EF0`): for stage 0, `TexStage(0)` then `Enable/Disable(5)`,
+  flag `0x20`. Stage 1 uses flag `0x10000000` and only touches the driver when the
+  multitexture capability byte at `[[ctx+0x38]+0x0C]+0x17C` is set.
+
+So "texture off" through the draw context really disables texturing on stage 0, and the
+cache stays correct with no resync. Driver state IDs, confirmed against SCD3D11's
+`eGDCapability`: 0 alpha test, 1 depth test, 2 stencil test, 3 cull, 4 blend, 5 texture, 6 fog.
+
+**Reset.** `SetDefaultRenderStateUnilaterally` (`0x007D5230`) resets every texture stage
+(`TexStage`, `TexStageMatrix`, `TexStageCoord`), invalidates the flag cache and reapplies the
+default packed state. That covers colour mask, depth test, depth mask and depth function,
+alpha test and alpha function, blend and blend function, cull and texture. It does not touch
+fog.
+
+**Fog.** `SetFog(enable, colour, start, end)` (`0x007D32D0`) treats a null colour and
+`FLT_MAX` (`0x7F7FFFFF`) for start or end as "keep the current value". Enabling it calls
+`Enable(6)` and `Fog(0, 2)` (linear). The 3D renderer's `Draw` (`0x007CB530`) turns fog on at
+`0x007CB6CC` with the scene's colour and range (renderer `+0xEC`, `+0x100`, `+0x104`, only
+when its flag at `+0xE9` is set) and turns it off at `0x007CB87D`, after the pass hooks. So
+inside a pass callback, `SetFog(true, nullptr, FLT_MAX, FLT_MAX)` gives exactly the scene's
+fog. The current fog state is cached at `ctx+0xA0`. RS reads it so that `fog = true` follows
+the scene: on when the scene has fog, off when the player turned it off. Afterwards RS
+restores whatever was there.
+
+**Stencil.**
+- The game never turns stencil test on. Scanning every `Enable`/`Disable` slot call for state
+  2 finds a single real driver call, `Disable(2)` at `0x0098EAA1`, in the graphics system's
+  default state setup. The other matches pass a different number of arguments, so they are
+  not driver calls. This scan finds immediate arguments only, but the packed state path uses
+  only IDs 0, 1, 3, 4 and 5. scvk's author reached the same conclusion independently ("The
+  game never calls its stencil functions").
+- Clearing stencil during the decal pass is therefore safe. The clear mask bits are `0x1000`
+  depth, `0x2000` stencil, `0x4000` colour.
+- **Built-in DX7:** the depth surface takes the first format `EnumZBufferFormats` lists
+  (callback `0x0088BDC0` copies it and stops). That is normally 16-bit with no stencil. RS can
+  confirm it at run time from the Z surface's pixel format (`DDPF_STENCILBUFFER`). The
+  composite stays the method here either way.
+- **SCD3D11:** uses `D24_UNORM_S8_UINT` when the device supports it, otherwise `D32_FLOAT`.
+  It implements `StencilFunc`, `StencilOp`, `StencilMask` and `ClearStencil` fully, and only
+  enables stencil when the buffer has it. Comparison IDs follow OpenGL order (0 never, 1 less,
+  2 equal, 3 less-equal, 4 greater, 5 not-equal, 6 greater-equal, 7 always). Stencil op IDs are
+  0 keep, 1 replace, 2 increment, 3 decrement, 4 invert.
+- **scvk 0.3.0:** picks `D16_UNORM` first (D32 float with `Use32BitDepth`), so in practice it
+  has no stencil. Its `StencilFunc`, `StencilOp`, `StencilMask` and `ClearStencil` are empty.
+  The stencil replay therefore runs as the plain replay there, with no harm done.
+
+**Live shadows.** SCD3D11 and scvk both have optional shadow-map shadows of their own
+(`cGDriver_LiveShadows.cpp`). Shadow recovery should be tested with those turned on as well,
+since the game's own shadow pass may then look different or be replaced.
