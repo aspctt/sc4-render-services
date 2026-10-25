@@ -302,8 +302,10 @@ renderer already validates at start-up. `SC4WorldVertex` is laid out to match it
 **Batch size on the built-in DX7 driver.** Its `DrawArrays` (`0x008857E0`) copies the vertices
 into a dynamic vertex buffer through `cD3DXContext::DrawPrimitive` (`0x00889E00`). That buffer
 is 64 KB (`0x10000 / stride`, set at `0x00889910`), and `Reserve` (`0x008899B0`) returns null
-for a draw that does not fit, which drops it with no error. With the 24-byte world vertex,
-that limit is 2730 vertices per draw. World draws are split into batches of at most that size.
+for a draw that does not fit, which drops it with no error. The driver stores the vertices in
+its own layout, which is larger than our 24 bytes: batches of 2730 still lost their first
+batch in game. That path handles layouts of up to 32 bytes, so world draws are split into
+batches of at most 2046 vertices (`0x10000 / 32`, rounded down to whole triangles).
 SCD3D11 and scvk have no such limit. Found when the larger showcase layers were missing on
 DX7 only.
 

@@ -108,7 +108,7 @@ public:
     virtual void DrawTriangles(const SC4WorldStyle& style, const SC4WorldVertex* vertices, uint32_t vertexCount) = 0;
 
     /// Draws triangles from shared vertices, three indices each. At most 65535 vertices. Keep
-    /// it under 2730 vertices to draw in one piece on the game's built-in DirectX driver,
+    /// it under 2046 vertices to draw in one piece on the game's built-in DirectX driver,
     /// larger sets are split into plain triangles first.
     virtual void DrawIndexedTriangles(const SC4WorldStyle& style, const SC4WorldVertex* vertices,
                                       uint32_t vertexCount, const uint16_t* indices, uint32_t indexCount) = 0;

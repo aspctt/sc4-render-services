@@ -49,6 +49,38 @@ namespace {
     static_assert(sizeof(GZVertex) == 24, "kGDVertexFormat_V3F_C4UB_T2F has a 24-byte stride");
     static_assert(sizeof(ImDrawIdx) == 2, "the backend submits 16-bit indices (kType_UnsignedShort)");
 
+    // The built-in DirectX 7 driver copies the vertices a draw uses (lowest to highest index)
+    // into a 64 KB buffer, in its own layout of up to 32 bytes each, and silently drops a draw
+    // that needs more (0x008899B0). A text-heavy window easily goes past that in one command.
+    constexpr uint32_t kMaxVerticesPerDraw = 0x10000 / 32;
+
+    // Draws one command's triangles, split so that no draw spans more than kMaxVerticesPerDraw
+    // vertices. ImGui's indices run mostly in order, so this rarely adds a draw.
+    void DrawTrianglesSplit(cIGZGDriver* driver, const ImDrawIdx* indices, const uint32_t count) {
+        uint32_t start = 0;
+        while (start + 3 <= count) {
+            uint32_t low = indices[start];
+            uint32_t high = indices[start];
+            uint32_t end = start;
+            while (end + 3 <= count) {
+                const uint32_t a = indices[end];
+                const uint32_t b = indices[end + 1];
+                const uint32_t c = indices[end + 2];
+                const uint32_t newLow = (std::min)({low, a, b, c});
+                const uint32_t newHigh = (std::max)({high, a, b, c});
+                if (end > start && newHigh - newLow + 1 > kMaxVerticesPerDraw) {
+                    break;
+                }
+                low = newLow;
+                high = newHigh;
+                end += 3;
+            }
+            driver->DrawElements(kPrimType_Triangles, static_cast<int32_t>(end - start), kType_UnsignedShort,
+                                 indices + start);
+            start = end;
+        }
+    }
+
     struct ImGui_ImplGZGDriver_Data
     {
         cIGZGDriver* Driver = nullptr;
@@ -475,8 +507,7 @@ void ImGui_ImplGZGDriver_RenderDrawData(ImDrawData* draw_data) {
                 last_vtx_offset = cmd.VtxOffset;
             }
 
-            driver->DrawElements(kPrimType_Triangles, static_cast<int32_t>(cmd.ElemCount), kType_UnsignedShort,
-                                 idx_base + cmd.IdxOffset);
+            DrawTrianglesSplit(driver, idx_base + cmd.IdxOffset, cmd.ElemCount);
         }
     }
 

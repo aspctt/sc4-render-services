@@ -76,9 +76,11 @@ namespace {
     constexpr uint32_t kBlendDstColor = 8;
 
     // The built-in DirectX driver copies each draw into a 64 KB dynamic vertex buffer
-    // (0x00889910) and silently drops a draw that does not fit (0x008899B0). With 24-byte
-    // vertices that is 2730, which is also a whole number of triangles.
-    constexpr uint32_t kMaxVerticesPerDraw = 0x10000 / sizeof(SC4WorldVertex) / 3 * 3;
+    // (0x00889910) and silently drops a draw that does not fit (0x008899B0). It stores the
+    // vertices in its own layout, up to 32 bytes each on that path, so 2046 always fits and is
+    // a whole number of triangles.
+    constexpr uint32_t kMaxVertexBytesOnBuiltInDriver = 32;
+    constexpr uint32_t kMaxVerticesPerDraw = 0x10000 / kMaxVertexBytesOnBuiltInDriver / 3 * 3;
 
     template <typename T>
     T& Field(void* object, const ptrdiff_t offset) {
