@@ -331,6 +331,20 @@ through: `driver->InterleavedArrays(format, 0, vertices)` and then
 driver accepts works, including `0x0A` (24 bytes, colour at 12, UV at 16), which the ImGui
 renderer already validates at start-up. `SC4WorldVertex` is laid out to match it.
 
+**Other draw context wrappers.** Checked against `RET` sizes, every `cIGZDrawService` thunk
+matches the game except four, now fixed in `cIGZDrawService`:
+- `SetVertexBuffer` (`0x007D2970`) zeroes its second stack argument and jumps to
+  `driver->InterleavedArrays(format, 0, vertices)`, so it takes `(format, unused, vertices)`.
+- `SetTransparency` (`0x007D2A20`) jumps to `driver->AlphaMultiplier(float)` (slot `0x84`), so
+  it takes the opacity as a float.
+- `DrawPrimsIndexedRaw` (`0x007D29F0`, `RET 0xC`) is
+  `driver->DrawElements(prim, count, 3, indices)` with 16-bit client-memory indices.
+- `DrawPrims` had the right argument count but was declared as
+  `(prim, startVertex, primitiveCount, flags)`.
+
+The first three were declared with the wrong number of arguments, so calling them through the
+old interface unbalanced the stack.
+
 **Batch size on the built-in DX7 driver.** Its `DrawArrays` (`0x008857E0`) copies the vertices
 into a dynamic vertex buffer through `cD3DXContext::DrawPrimitive` (`0x00889E00`). That buffer
 is 64 KB (`0x10000 / stride`, set at `0x00889910`), and `Reserve` (`0x008899B0`) returns null

@@ -100,7 +100,8 @@ public:
     virtual void SetTexTransform4(SC4DrawContextHandle handle, void* transform4x4, int stage) = 0;
     virtual void ClearTexTransform(SC4DrawContextHandle handle, int stage) = 0;
     virtual void SetTexCoord(SC4DrawContextHandle handle, int texCoord, int stage) = 0;
-    virtual void SetVertexBuffer(SC4DrawContextHandle handle) = 0;
+    /// Points the driver at client-memory vertices in a cIGZGDriver vertex format.
+    virtual void SetVertexBuffer(SC4DrawContextHandle handle, uint32_t vertexFormat, const void* vertices) = 0;
     virtual void SetIndexBuffer(SC4DrawContextHandle handle, uint32_t indexBuffer, uint32_t indexFormat) = 0;
     virtual void EnableBlendStateFlag(SC4DrawContextHandle handle, bool enabled) = 0;
     virtual void EnableAlphaTestFlag(SC4DrawContextHandle handle, bool enabled) = 0;
@@ -112,7 +113,8 @@ public:
     virtual void SetAlphaFunc(SC4DrawContextHandle handle, uint32_t alphaFunc, float alphaRef) = 0;
     virtual void SetDepthFunc(SC4DrawContextHandle handle, uint32_t depthFunc) = 0;
     virtual void SetDepthOffset(SC4DrawContextHandle handle, int depthOffset) = 0;
-    virtual void SetTransparency(SC4DrawContextHandle handle) = 0;
+    /// Multiplies the alpha of everything drawn next by opacity (0 to 1), until ResetTransparency.
+    virtual void SetTransparency(SC4DrawContextHandle handle, float opacity) = 0;
     virtual void ResetTransparency(SC4DrawContextHandle handle) = 0;
     virtual bool GetLighting(SC4DrawContextHandle handle) = 0;
     virtual void SetLighting(SC4DrawContextHandle handle, bool enableLighting) = 0;
@@ -123,11 +125,14 @@ public:
 
     virtual void DrawBoundingBox(SC4DrawContextHandle handle, float* bbox6,
                                  float r, float g, float b, float a) = 0;
-    virtual void DrawPrims(SC4DrawContextHandle handle, uint32_t primType, uint32_t startVertex,
-                           uint32_t primitiveCount, uint32_t flags) = 0;
+    /// Draws vertexCount client-memory vertices in a cIGZGDriver vertex format.
+    virtual void DrawPrims(SC4DrawContextHandle handle, uint32_t primType, uint32_t vertexFormat,
+                           uint32_t vertexCount, const void* vertices) = 0;
+    /// Draws indices from the index buffer set with SetIndexBuffer, starting at indexStart.
     virtual void DrawPrimsIndexed(SC4DrawContextHandle handle, uint8_t primType, long indexStart, long indexCount) = 0;
-    virtual void DrawPrimsIndexedRaw(SC4DrawContextHandle handle, uint32_t primType, uint32_t indexBuffer,
-                                     uint32_t indexCount, uint32_t flags) = 0;
+    /// Draws 16-bit indices into the vertices set with SetVertexBuffer.
+    virtual void DrawPrimsIndexedRaw(SC4DrawContextHandle handle, uint32_t primType, uint32_t indexCount,
+                                     const uint16_t* indices) = 0;
     virtual void DrawRect(SC4DrawContextHandle handle, void* drawTarget, int* rect) = 0;
     ///@}
 };

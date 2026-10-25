@@ -400,10 +400,10 @@ void DrawService::SetTexCoord(const SC4DrawContextHandle handle, const int texCo
     }
 }
 
-void DrawService::SetVertexBuffer(const SC4DrawContextHandle handle) {
+void DrawService::SetVertexBuffer(const SC4DrawContextHandle handle, const uint32_t vertexFormat, const void* vertices) {
     auto* drawContext = Validate(handle);
     if (drawContext && thunks_.setVertexBuffer) {
-        thunks_.setVertexBuffer(drawContext);
+        thunks_.setVertexBuffer(drawContext, vertexFormat, 0, vertices);
     }
 }
 
@@ -484,10 +484,10 @@ void DrawService::SetDepthOffset(const SC4DrawContextHandle handle, const int de
     }
 }
 
-void DrawService::SetTransparency(const SC4DrawContextHandle handle) {
+void DrawService::SetTransparency(const SC4DrawContextHandle handle, const float opacity) {
     auto* drawContext = Validate(handle);
     if (drawContext && thunks_.setTransparency) {
-        thunks_.setTransparency(drawContext);
+        thunks_.setTransparency(drawContext, opacity);
     }
 }
 
@@ -549,11 +549,11 @@ void DrawService::DrawBoundingBox(const SC4DrawContextHandle handle, float* bbox
     thunks_.drawBoundingBox(drawContext, bbox6, &color);
 }
 
-void DrawService::DrawPrims(const SC4DrawContextHandle handle, const uint32_t primType, const uint32_t startVertex,
-                            const uint32_t primitiveCount, const uint32_t flags) {
+void DrawService::DrawPrims(const SC4DrawContextHandle handle, const uint32_t primType, const uint32_t vertexFormat,
+                            const uint32_t vertexCount, const void* vertices) {
     auto* drawContext = Validate(handle);
-    if (drawContext && thunks_.drawPrims) {
-        thunks_.drawPrims(drawContext, primType, startVertex, primitiveCount, flags);
+    if (drawContext && thunks_.drawPrims && vertices) {
+        thunks_.drawPrims(drawContext, primType, vertexFormat, vertexCount, vertices);
     }
 }
 
@@ -566,10 +566,10 @@ void DrawService::DrawPrimsIndexed(const SC4DrawContextHandle handle, const uint
 }
 
 void DrawService::DrawPrimsIndexedRaw(const SC4DrawContextHandle handle, const uint32_t primType,
-                                      const uint32_t indexBuffer, const uint32_t indexCount, const uint32_t flags) {
+                                      const uint32_t indexCount, const uint16_t* indices) {
     auto* drawContext = Validate(handle);
-    if (drawContext && thunks_.drawPrimsIndexedRaw) {
-        thunks_.drawPrimsIndexedRaw(drawContext, primType, indexBuffer, indexCount, flags);
+    if (drawContext && thunks_.drawPrimsIndexedRaw && indices) {
+        thunks_.drawPrimsIndexedRaw(drawContext, primType, indexCount, indices);
     }
 }
 
@@ -818,7 +818,7 @@ bool DrawService::Init() {
     thunks_.setTexTransform4 = reinterpret_cast<void (__thiscall*)(void*, void*, int)>(0x007D4340);
     thunks_.clearTexTransform = reinterpret_cast<void (__thiscall*)(void*, int)>(0x007D4420);
     thunks_.setTexCoord = reinterpret_cast<void (__thiscall*)(void*, int, int)>(0x007D4180);
-    thunks_.setVertexBuffer = reinterpret_cast<void (__thiscall*)(void*)>(0x007D2970);
+    thunks_.setVertexBuffer = reinterpret_cast<void (__thiscall*)(void*, uint32_t, int32_t, const void*)>(0x007D2970);
     thunks_.setIndexBuffer = reinterpret_cast<void (__thiscall*)(void*, uint32_t, uint32_t)>(0x007D2980);
     thunks_.enableBlendStateFlag = reinterpret_cast<void (__thiscall*)(void*, char)>(0x007D4010);
     thunks_.enableAlphaTestFlag = reinterpret_cast<void (__thiscall*)(void*, bool)>(0x007D3E90);
@@ -830,7 +830,7 @@ bool DrawService::Init() {
     thunks_.setAlphaFunc = reinterpret_cast<void (__thiscall*)(void*, uint32_t, float)>(0x007D2F50);
     thunks_.setDepthFunc = reinterpret_cast<void (__thiscall*)(void*, uint32_t)>(0x007D28A0);
     thunks_.setDepthOffset = reinterpret_cast<void (__thiscall*)(void*, int)>(0x007D4480);
-    thunks_.setTransparency = reinterpret_cast<void (__thiscall*)(void*)>(0x007D2A20);
+    thunks_.setTransparency = reinterpret_cast<void (__thiscall*)(void*, float)>(0x007D2A20);
     thunks_.resetTransparency = reinterpret_cast<void (__thiscall*)(void*)>(0x007D2A30);
     thunks_.getLighting = reinterpret_cast<uint8_t (__thiscall*)(void*)>(0x007D2A10);
     thunks_.setLighting = reinterpret_cast<void (__thiscall*)(void*, bool)>(0x007D30D0);
@@ -839,9 +839,9 @@ bool DrawService::Init() {
     thunks_.initContext = reinterpret_cast<void (__thiscall*)(void*)>(0x007D6320);
     thunks_.shutdownContext = reinterpret_cast<void (__thiscall*)(void*)>(0x007D2720);
     thunks_.drawBoundingBox = reinterpret_cast<void (__thiscall*)(void*, float*, const void*)>(0x007D5030);
-    thunks_.drawPrims = reinterpret_cast<void (__thiscall*)(void*, uint32_t, uint32_t, uint32_t, uint32_t)>(0x007D2990);
+    thunks_.drawPrims = reinterpret_cast<void (__thiscall*)(void*, uint32_t, uint32_t, uint32_t, const void*)>(0x007D2990);
     thunks_.drawPrimsIndexed = reinterpret_cast<void (__thiscall*)(void*, uint8_t, long, long)>(0x007D29C0);
-    thunks_.drawPrimsIndexedRaw = reinterpret_cast<void (__thiscall*)(void*, uint32_t, uint32_t, uint32_t, uint32_t)>(0x007D29F0);
+    thunks_.drawPrimsIndexedRaw = reinterpret_cast<void (__thiscall*)(void*, uint32_t, uint32_t, const uint16_t*)>(0x007D29F0);
     thunks_.drawRect = reinterpret_cast<void (__thiscall*)(void*, void*, int*)>(0x00735720);
 
     LOG_INFO("DrawService: bound 641 draw-context thunks and registered");
