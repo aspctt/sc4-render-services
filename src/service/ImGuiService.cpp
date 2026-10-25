@@ -18,7 +18,7 @@
 #include "imgui_impl_dx11.h"
 #include "imgui_impl_win32.h"
 #include "public/ImGuiServiceIds.h"
-#include "SCGLDX11Hook.h"
+#include "SCD3D11Hook.h"
 #include "utils/Logger.h"
 #include "utils/VersionDetection.h"
 
@@ -186,8 +186,8 @@ bool ImGuiService::Shutdown() {
 
     RemoveWndProcHook_();
     if (backend_ == GraphicsBackend::D3D11) {
-        SCGLDX11Hook::SetFrameCallback(nullptr);
-        SCGLDX11Hook::Shutdown();
+        SCD3D11Hook::SetFrameCallback(nullptr);
+        SCD3D11Hook::Shutdown();
         if (d3d11BackendInitialized_) ImGui_ImplDX11_Shutdown();
         if (ImGui::GetCurrentContext()) {
             ImGui_ImplWin32_Shutdown();
@@ -405,14 +405,14 @@ void ImGuiService::RenderFrameThunk_(IDirect3DDevice7* device) {
     }
 }
 
-void ImGuiService::RenderFrameD3D11Thunk_(SCGLD3D11FrameContext const* frame) {
+void ImGuiService::RenderFrameD3D11Thunk_(SCD3D11FrameContext const* frame) {
     auto* instance = g_instance.load(std::memory_order_acquire);
     if (instance) instance->RenderFrameD3D11_(frame);
 }
 
-void ImGuiService::RenderFrameD3D11_(SCGLD3D11FrameContext const* frame) {
+void ImGuiService::RenderFrameD3D11_(SCD3D11FrameContext const* frame) {
     if (!initialized_ || frame == nullptr || frame->structSize < sizeof(*frame) || frame->apiVersion != 1) return;
-    if (frame->event == SCGL_D3D11_EVENT_BEFORE_DEVICE_DESTROY) {
+    if (frame->event == SCD3D11_EVENT_BEFORE_DEVICE_DESTROY) {
         if (backend_ == GraphicsBackend::D3D11 && d3d11BackendInitialized_) {
             OnDeviceLost_();
             ImGui_ImplDX11_Shutdown();
@@ -426,7 +426,7 @@ void ImGuiService::RenderFrameD3D11_(SCGLD3D11FrameContext const* frame) {
         d3d11RenderTarget_ = nullptr;
         return;
     }
-    if (frame->event != SCGL_D3D11_EVENT_RENDER || !frame->device || !frame->context || !frame->window) return;
+    if (frame->event != SCD3D11_EVENT_RENDER || !frame->device || !frame->context || !frame->window) return;
 
     DWORD const threadId = GetCurrentThreadId();
     g_renderThreadId.store(threadId, std::memory_order_release);
@@ -677,11 +677,11 @@ bool ImGuiService::EnsureInitialized_() {
         return false;
     }
 
-    if (pDriver->GetGZCLSID() == 0xc4554841) {
+    if (SCD3D11Hook::IsSCD3D11Driver(pDriver)) {
         backend_ = GraphicsBackend::D3D11;
-        SCGLDX11Hook::SetFrameCallback(&ImGuiService::RenderFrameD3D11Thunk_);
-        if (!SCGLDX11Hook::CaptureInterface(pDriver)) {
-            if (!warnedNoDriver_) LOG_WARN("ImGuiService: SCGL D3D11 frame service is not ready");
+        SCD3D11Hook::SetFrameCallback(&ImGuiService::RenderFrameD3D11Thunk_);
+        if (!SCD3D11Hook::CaptureInterface(pDriver)) {
+            if (!warnedNoDriver_) LOG_WARN("ImGuiService: SCD3D11 frame service is not ready");
             warnedNoDriver_ = true;
             return false;
         }

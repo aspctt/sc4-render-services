@@ -172,7 +172,7 @@ set(CUSTOM_SERVICES_SOURCES
         ${SC4RS_ROOT}/src/utils/Logger.cpp
         ${SC4RS_ROOT}/src/utils/Settings.cpp
         ${SC4RS_ROOT}/src/GraphicsInterfaceHook.cpp
-        ${SC4RS_ROOT}/src/SCGLDX11Hook.cpp
+        ${SC4RS_ROOT}/src/SCD3D11Hook.cpp
 )
 
 add_library(SC4RenderServices SHARED

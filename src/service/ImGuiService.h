@@ -14,7 +14,7 @@
 
 #include "cRZBaseSystemService.h"
 #include "GraphicsInterfaceHook.h"
-#include "SCGLD3D11Service.h"
+#include "SCD3D11Service.h"
 #include "public/cIGZImGuiService.h"
 
 // Forward declaration
@@ -136,9 +136,9 @@ private:
     }
 
     static void RenderFrameThunk_(IDirect3DDevice7* device);
-    static void RenderFrameD3D11Thunk_(SCGLD3D11FrameContext const* frame);
+    static void RenderFrameD3D11Thunk_(SCD3D11FrameContext const* frame);
     void RenderFrame_(IDirect3DDevice7* device);
-    void RenderFrameD3D11_(SCGLD3D11FrameContext const* frame);
+    void RenderFrameD3D11_(SCD3D11FrameContext const* frame);
     void RenderFrameContents_();
     bool EnsureInitialized_();
     void InitializePanels_();

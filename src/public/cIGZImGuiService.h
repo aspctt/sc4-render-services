@@ -135,7 +135,7 @@ public:
     /// Gets the ImFont* for a registered font ID, or nullptr if not found.
     [[nodiscard]] virtual void* GetFont(uint32_t fontId) const = 0;
 
-    /// Acquires the current SCGL/D3D11 objects for advanced rendering.
+    /// Acquires the current SCD3D11 objects for advanced rendering.
     /// Call only from a QueueRender callback. Every returned interface is AddRef'd;
     /// the caller must Release each one. Returns false while using the DX7 backend.
     virtual bool AcquireD3D11Interfaces(ID3D11Device** outDevice,

@@ -2,14 +2,15 @@
 
 #include <atomic>
 
-#include "SCGLD3D11Service.h"
+#include "SCD3D11Service.h"
 #include "cIGZGDriver.h"
 
-class SCGLDX11Hook
+class SCD3D11Hook
 {
 public:
-    using FrameCallback = void (*)(SCGLD3D11FrameContext const* frame);
+    using FrameCallback = void (*)(SCD3D11FrameContext const* frame);
 
+    static bool IsSCD3D11Driver(cIGZGDriver* driver);
     static bool CaptureInterface(cIGZGDriver* driver);
     static void SetFrameCallback(FrameCallback callback);
     static void Shutdown();
