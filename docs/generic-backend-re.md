@@ -274,6 +274,12 @@ Verified in game on scvk 0.3.0-rc.1 (main menu and region view, docked demo wind
 fps) and on SCD3D11 (main menu, demo windows, docking, mouse input; rechecked after the switch
 to `CreateTexture`).
 
+Built-in DirectX 7 driver: verified at 1920x1080 windowed (renderer ready, demo windows, ~1,600
+fps, `IsTexture` probe passes, 45 s without crash or hang). At 3200x1800 the game crashes
+within 2 s inside the native driver (`0x00884FE1`, and `0x0098E9A6` on a graphic system whose
+`+0xE4` object was never created) **with SC4RenderServices removed too**: the native driver
+cannot start at that resolution. Not an RS issue, but worth a line in the README's renderer notes.
+
 Device loss: SCD3D11 recreates textures after device removal with their names and sizes but
 **blank contents**, so `IsTexture` stays true and the backend's per-frame `IsTexture` check
 cannot see it. There is no driver-neutral notification. Correction: the `0x4FA845B` /
