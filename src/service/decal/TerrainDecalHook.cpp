@@ -61,6 +61,7 @@ namespace TerrainDecal
             kRecoveryStencil = 1,
             kRecoveryReplay = 2,
             kRecoveryOff = 3,
+            kRecoveryZeroOpacity = 4,
         };
 
         template <typename T>
@@ -496,6 +497,10 @@ namespace TerrainDecal
             LogRecoveryMethod_(kRecoveryOff);
             return;
         }
+        if (!(options_.shadowRecoveryOpacityScale > 0.0f)) {
+            LogRecoveryMethod_(kRecoveryZeroOpacity);
+            return;
+        }
         if (shadowRecoveryActive_ ||
             !addresses_ ||
             !addresses_->drawDecals ||
@@ -803,6 +808,9 @@ namespace TerrainDecal
             break;
         case kRecoveryReplay:
             LOG_INFO("TerrainDecalHook: decals are drawn again over shadows one by one, overlapping decals come out a little darker");
+            break;
+        case kRecoveryZeroOpacity:
+            LOG_INFO("TerrainDecalHook: decals are not drawn again over shadows, because TerrainDecalShadowRecoveryOpacityScale is 0");
             break;
         default:
             LOG_INFO("TerrainDecalHook: decals are not drawn again over shadows, because EnableCustomTerrainDecalRenderer is false");
