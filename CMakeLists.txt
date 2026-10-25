@@ -59,7 +59,9 @@ endif()
 if(NOT TARGET spdlog)
     add_subdirectory(vendor/spdlog)
 endif()
-add_subdirectory(vendor/gzcom-dll)
+if(NOT TARGET gzcom_dll)
+    add_subdirectory(vendor/gzcom-dll)
+endif()
 
 set(MINI_INCLUDE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/vendor/mINI/src")
 if (NOT EXISTS "${MINI_INCLUDE_DIR}/mini/ini.h")
@@ -113,11 +115,12 @@ target_compile_definitions(imgui INTERFACE IMGUI_USER_CONFIG="ImGuiUserConfig.h"
 # Links a plugin against the ImGui that SC4RenderServices.dll exports. The import is delay-loaded,
 # so load order does not matter: the game may load the plugin first, and the import resolves on
 # the first ImGui call, which a plugin makes only once it holds the ImGui service.
+# Also works from a project that adds this repository with add_subdirectory.
 function(sc4rs_use_imgui target)
     target_link_libraries(${target} PRIVATE SC4RenderServices imgui delayimp)
     target_compile_definitions(${target} PRIVATE IMGUI_DLL_IMPORT)
     target_link_options(${target} PRIVATE "/DELAYLOAD:SC4RenderServices.dll")
-    target_sources(${target} PRIVATE ${SC4RS_ROOT}/src/public/SC4RenderServicesDelayLoad.cpp)
+    target_sources(${target} PRIVATE ${CMAKE_CURRENT_FUNCTION_LIST_DIR}/src/public/SC4RenderServicesDelayLoad.cpp)
 endfunction()
 
 # Preserve existing link name in this project while using the vendor CMake target.
