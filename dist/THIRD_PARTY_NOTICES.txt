@@ -10,10 +10,9 @@ TABLE OF CONTENTS
 
  1. gzcom-dll (LGPL 2.1)
  2. Dear ImGui (MIT)
- 3. D3D7Imgui (License file not bundled)
- 4. mINI (MIT)
- 5. spdlog (MIT)
- 6. {fmt} (MIT)
+ 3. mINI (MIT)
+ 4. spdlog (MIT)
+ 5. {fmt} (MIT)
 
 ===============================================================================
 1. gzcom-dll
@@ -32,13 +31,13 @@ The following components are available under the MIT License:
 2. Dear ImGui - https://github.com/ocornut/imgui
    Copyright (c) 2014-2025 Omar Cornut
 
-4. mINI - https://github.com/pulzed/mINI
+3. mINI - https://github.com/pulzed/mINI
    Copyright (c) 2018 Danijel Durakovic
 
-5. spdlog - https://github.com/gabime/spdlog
+4. spdlog - https://github.com/gabime/spdlog
    Copyright (c) 2016-present Gabi Melman and spdlog contributors
 
-6. {fmt} - https://github.com/fmtlib/fmt
+5. {fmt} - https://github.com/fmtlib/fmt
    License text URL:
    https://raw.githubusercontent.com/fmtlib/fmt/master/LICENSE
 -------------------------------------------------------------------------------
@@ -63,10 +62,3 @@ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 
-===============================================================================
-3. D3D7Imgui
-   https://github.com/caspervg/D3D7Imgui
-   License: No license file was found in the vendored D3D7Imgui submodule
-   at the time these notices were prepared.
-   Please review the upstream repository for the applicable license terms.
-===============================================================================

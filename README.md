@@ -158,7 +158,8 @@ Terrain decal guide: [docs/terrain-decals.md](docs/terrain-decals.md)
 
 ## Usage
 
-- Link your DLL against `imgui.dll` and include `vendor/d3d7imgui/ImGui/imgui.h`.
+- Link your DLL against `imgui.dll`, include `vendor/imgui/imgui.h` (Dear ImGui docking
+  branch), and define `IMGUI_USER_CONFIG="ImGuiUserConfig.h"` plus `IMGUI_DLL_IMPORT`.
 - Query the service via `cIGZFrameWork::GetSystemService` with `kImGuiServiceID`
   and `GZIID_cIGZImGuiService` from `src/public/ImGuiServiceIds.h`.
 - Register a panel with `ImGuiPanelDesc` and render using `ImGui::*`.

@@ -80,32 +80,41 @@ if(MSVC)
     )
 endif()
 
-# ImGui library (vendor/imguid3d7 has no CMakeLists)
-set(IMGUI_DIR ${SC4RS_ROOT}/vendor/d3d7imgui/ImGui)
+# ImGui library: upstream docking branch (vendor/imgui has no CMakeLists)
+set(IMGUI_DIR ${SC4RS_ROOT}/vendor/imgui)
 
-# Add all core ImGui .cpp and .h files
-file(GLOB IMGUI_CORE_SOURCES
-        ${IMGUI_DIR}/*.cpp
-        ${IMGUI_DIR}/*.h
+set(IMGUI_CORE_SOURCES
+        ${IMGUI_DIR}/imgui.cpp
+        ${IMGUI_DIR}/imgui_demo.cpp
+        ${IMGUI_DIR}/imgui_draw.cpp
+        ${IMGUI_DIR}/imgui_tables.cpp
+        ${IMGUI_DIR}/imgui_widgets.cpp
+        ${IMGUI_DIR}/imgui.h
+        ${IMGUI_DIR}/imgui_internal.h
+        ${SC4RS_ROOT}/src/public/ImGuiUserConfig.h
 )
 
-# Explicitly add the Win32 and DX7 backend files
+# Win32 platform backend from upstream
 set(IMGUI_BACKENDS
-        ${IMGUI_DIR}/imgui_impl_win32.h
-        ${IMGUI_DIR}/imgui_impl_win32.cpp
-        ${IMGUI_DIR}/imgui_impl_dx7.h
-        ${IMGUI_DIR}/imgui_impl_dx7.cpp
+        ${IMGUI_DIR}/backends/imgui_impl_win32.h
+        ${IMGUI_DIR}/backends/imgui_impl_win32.cpp
 )
 
 add_library(imgui SHARED ${IMGUI_CORE_SOURCES} ${IMGUI_BACKENDS})
 
 target_include_directories(imgui PUBLIC
         ${IMGUI_DIR}
+        ${IMGUI_DIR}/backends
+        ${SC4RS_ROOT}/src/public
 )
-target_compile_definitions(imgui PRIVATE IMGUI_DLL_EXPORT)
+# Every module that includes imgui.h has to see the same config, so it is PUBLIC.
+target_compile_definitions(imgui
+        PUBLIC IMGUI_USER_CONFIG="ImGuiUserConfig.h"
+        PRIVATE IMGUI_DLL_EXPORT
+)
 
 if(WIN32)
-    target_link_libraries(imgui PRIVATE user32 gdi32 ddraw dxguid)
+    target_link_libraries(imgui PRIVATE user32 gdi32)
 endif()
 
 # Preserve existing link name in this project while using the vendor CMake target.

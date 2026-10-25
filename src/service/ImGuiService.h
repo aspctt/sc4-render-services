@@ -1,7 +1,6 @@
 #pragma once
 
 #include <atomic>
-#include <d3d.h>
 #include <imgui.h>
 #include <mutex>
 #include <new>
@@ -13,11 +12,18 @@
 #include <Windows.h>
 
 #include "cRZBaseSystemService.h"
-#include "DX7InterfaceHook.h"
 #include "public/cIGZImGuiService.h"
 
-// Forward declaration
-struct IDirectDrawSurface7;
+struct ImGuiInitSettings
+{
+    float fontSize = 13.0f;
+    std::string fontFile;           // Empty = use built-in ProggyVector
+    int fontOversample = 2;
+    std::string theme = "dark";     // dark, light, classic
+    bool keyboardNav = true;
+    float uiScale = 1.0f;
+    std::string layoutFile;         // Absolute path of the ImGui layout .ini; empty = don't save
+};
 
 // ReSharper disable once CppPolymorphicClassWithNonVirtualPublicDestructor
 class ImGuiService final : public cRZBaseSystemService, public cIGZImGuiService
@@ -96,20 +102,18 @@ private:
         uint32_t height;
         uint32_t creationGeneration;
         std::vector<uint8_t> sourceData;       // RGBA32 pixel data for recreation
-        IDirectDrawSurface7* surface;          // Can be nullptr if device lost
+        uint32_t driverTexture;                // cIGZGDriver texture name; 0 until created
         bool needsRecreation;
         bool pendingDestroy;
-        bool useSystemMemory;
 
         ManagedTexture()
             : id(0)
             , width(0)
             , height(0)
             , creationGeneration(0)
-            , surface(nullptr)
+            , driverTexture(0)
             , needsRecreation(false)
-            , pendingDestroy(false)
-            , useSystemMemory(false) {}
+            , pendingDestroy(false) {}
     };
 
     struct RenderQueueItem
@@ -129,9 +133,13 @@ private:
         delete static_cast<FnType*>(data);
     }
 
-    static void RenderFrameThunk_(IDirect3DDevice7* device);
-    void RenderFrame_(IDirect3DDevice7* device);
+    // Builds one ImGui frame from the registered panels and the render queue. The
+    // renderer backend calls this from its frame hook and then draws ImGui::GetDrawData().
+    void BuildFrame_();
     bool EnsureInitialized_();
+    bool CreateContext_(HWND hwnd);
+    void DestroyContext_();
+    void CaptureD3DX_();
     void InitializePanels_();
     void ProcessPendingFontRegistrations_();
     void ProcessPendingTextureReleases_();
@@ -141,10 +149,10 @@ private:
     static LRESULT CALLBACK WndProcHook(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam);
 
     // Texture management helpers
-    bool RebuildFontAtlas_();
-    bool CreateSurfaceForTexture_(ManagedTexture& tex);
+    bool CreateDriverTexture_(ManagedTexture& tex);
+    void ReleaseDriverTexture_(ManagedTexture& tex);
     void OnDeviceLost_();
-    bool OnDeviceRestored_();
+    void OnDeviceRestored_();
     void InvalidateAllTextures_();
 
 private:
@@ -166,8 +174,6 @@ private:
     ImGuiInitSettings initSettings_;
     HWND gameWindow_;
     WNDPROC originalWndProc_;
-    IDirect3DDevice7* lastKnownDevice_;
-    IDirectDraw7* lastKnownDDraw_;
     std::atomic<bool> initialized_;
     std::atomic<bool> imguiInitialized_;
     bool hookInstalled_;

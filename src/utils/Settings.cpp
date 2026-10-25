@@ -37,6 +37,7 @@ namespace {
     constexpr float kMaxTerrainDecalShadowRecoveryOpacityScale = 1.0f;
 
     const std::string kDefaultTheme = "dark";
+    const std::string kDefaultLayoutFile = "SC4RenderServices_layout.ini";
     const std::string kSectionName = "SC4RenderServices";
 
     std::string ToLower(const std::string& value) {
@@ -117,6 +118,7 @@ Settings::Settings()
     , theme_(kDefaultTheme)
     , keyboardNav_(kDefaultKeyboardNav)
     , uiScale_(kDefaultUIScale)
+    , layoutFile_(kDefaultLayoutFile)
     , showDemoPanel_(kDefaultShowDemoPanel)
     , enableImGuiService_(kDefaultEnableImGuiService)
     , enableS3DCameraService_(kDefaultEnableS3DCameraService)
@@ -188,6 +190,11 @@ void Settings::Load(const std::filesystem::path& settingsFilePath) {
         // FontFile
         if (section.has("FontFile")) {
             fontFile_ = section.get("FontFile");
+        }
+
+        // LayoutFile (empty disables saving the ImGui window/docking layout)
+        if (section.has("LayoutFile")) {
+            layoutFile_ = section.get("LayoutFile");
         }
 
         // FontOversample
@@ -365,6 +372,7 @@ spdlog::level::level_enum Settings::GetLogLevel() const noexcept { return logLev
 bool Settings::GetLogToFile() const noexcept { return logToFile_; }
 float Settings::GetFontSize() const noexcept { return fontSize_; }
 std::string Settings::GetFontFile() const noexcept { return fontFile_; }
+std::string Settings::GetLayoutFile() const noexcept { return layoutFile_; }
 int Settings::GetFontOversample() const noexcept { return fontOversample_; }
 std::string Settings::GetTheme() const noexcept { return theme_; }
 bool Settings::GetKeyboardNav() const noexcept { return keyboardNav_; }

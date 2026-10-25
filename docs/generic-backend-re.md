@@ -243,6 +243,15 @@ Open items:
   (`SCD3D11Hook`, the D3D11 texture path, `imgui_impl_dx11`) is **not** on this branch.
   SCD3D11 therefore uses the generic backend, which changes steps 4 and 6.
 - The slot numbering caveat in the vtable section above.
+- `ImGuiPlatformIO::Renderer_TextureMaxWidth`/`Height` are not new: they were added on
+  2024-11-29 (`0f0473bf1`) and are in every release from v1.92.0, including the d3d7
+  fork's 1.92.1. Docking is the reason for `v1.93.0-docking`, not these fields.
+- The maintainer dropped native renderer backends altogether. The DX7 ImGui backend, its
+  `EndScene` hook and the DirectDraw texture path were removed in step 2, so ImGui renders
+  nothing until the generic backend lands in step 5. Step 6
+  (`Backend=auto|generic|native`) no longer applies, and step 4's driver identification is
+  only for logging and `GetActiveDriverInfo`. The D3DX capture stays for terrain-decal
+  shadow recovery and `AcquireD3DInterfaces`.
 - `CLAUDE.md`'s build commands: a multi-config Debug build fails to link
   (`gzcom_dll.lib` built with `/MDd`, everything else `/MD`) unless configured with
   `-DCMAKE_BUILD_TYPE=Debug`, as the CLion profile does. From Git Bash, MSBuild also

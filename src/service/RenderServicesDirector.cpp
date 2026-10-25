@@ -136,6 +136,12 @@ public:
             imguiSettings.fontFile = (dllFolderPath / fontFile).string();
         }
 
+        // The window/docking layout is saved next to the DLL, like SC4RenderServices.ini
+        const std::string layoutFile = settings.GetLayoutFile();
+        if (!layoutFile.empty() && !dllFolderPath.empty()) {
+            imguiSettings.layoutFile = (dllFolderPath / layoutFile).string();
+        }
+
         // Register ImGui service (641-gated inside Init)
         if (settings.GetEnableImGuiService()) {
             imguiService_.SetInitSettings(imguiSettings);

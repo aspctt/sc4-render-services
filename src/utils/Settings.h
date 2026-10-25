@@ -23,6 +23,7 @@ public:
     [[nodiscard]] std::string GetTheme() const noexcept;
     [[nodiscard]] bool GetKeyboardNav() const noexcept;
     [[nodiscard]] float GetUIScale() const noexcept;
+    [[nodiscard]] std::string GetLayoutFile() const noexcept;
     [[nodiscard]] bool GetShowDemoPanel() const noexcept;
 
     // Service toggles
@@ -43,6 +44,7 @@ private:
     std::string theme_;
     bool keyboardNav_;
     float uiScale_;
+    std::string layoutFile_;
     bool showDemoPanel_;
     bool enableImGuiService_;
     bool enableS3DCameraService_;
