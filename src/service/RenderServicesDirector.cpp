@@ -137,9 +137,10 @@ public:
                  settings.GetEnableDrawService(),
                  settings.GetEnableTerrainDecalService(),
                  settings.GetEnableCustomTerrainDecalRenderer());
-        LOG_INFO("RenderServicesDirector: terrain decal renderer settings (DefaultDepthOffset={}, ShadowRecoveryOpacityScale={})",
+        LOG_INFO("RenderServicesDirector: terrain decal renderer settings (DefaultDepthOffset={}, ShadowRecoveryOpacityScale={}, ShadowRecoveryUseStencil={})",
                  settings.GetTerrainDecalCustomDefaultDepthOffset(),
-                 settings.GetTerrainDecalShadowRecoveryOpacityScale());
+                 settings.GetTerrainDecalShadowRecoveryOpacityScale(),
+                 settings.GetTerrainDecalShadowRecoveryUseStencil());
         WarnAboutLegacyImGuiDll("startup");
 
         if (!mpFrameWork) {
@@ -220,6 +221,7 @@ public:
             terrainDecalService_.SetEnableCustomRenderer(settings.GetEnableCustomTerrainDecalRenderer());
             terrainDecalService_.SetCustomDefaultDepthOffset(settings.GetTerrainDecalCustomDefaultDepthOffset());
             terrainDecalService_.SetShadowRecoveryOpacityScale(settings.GetTerrainDecalShadowRecoveryOpacityScale());
+            terrainDecalService_.SetShadowRecoveryUseStencil(settings.GetTerrainDecalShadowRecoveryUseStencil());
             if (terrainDecalService_.Init()) {
                 mpFrameWork->AddSystemService(&terrainDecalService_);
                 mpFrameWork->AddToTick(&terrainDecalService_);

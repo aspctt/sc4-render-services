@@ -35,6 +35,7 @@ namespace {
     constexpr float kDefaultTerrainDecalShadowRecoveryOpacityScale = 0.25f;
     constexpr float kMinTerrainDecalShadowRecoveryOpacityScale = 0.0f;
     constexpr float kMaxTerrainDecalShadowRecoveryOpacityScale = 1.0f;
+    constexpr bool kDefaultTerrainDecalShadowRecoveryUseStencil = true;
 
     const std::string kDefaultTheme = "dark";
     const std::string kDefaultLayoutFile = "SC4RenderServices_layout.ini";
@@ -126,7 +127,8 @@ Settings::Settings()
     , enableTerrainDecalService_(kDefaultEnableTerrainDecalService)
     , enableCustomTerrainDecalRenderer_(kDefaultEnableCustomTerrainDecalRenderer)
     , terrainDecalCustomDefaultDepthOffset_(kDefaultTerrainDecalCustomDefaultDepthOffset)
-    , terrainDecalShadowRecoveryOpacityScale_(kDefaultTerrainDecalShadowRecoveryOpacityScale) {}
+    , terrainDecalShadowRecoveryOpacityScale_(kDefaultTerrainDecalShadowRecoveryOpacityScale)
+    , terrainDecalShadowRecoveryUseStencil_(kDefaultTerrainDecalShadowRecoveryUseStencil) {}
 
 void Settings::Load(const std::filesystem::path& settingsFilePath) {
     // Reset to defaults
@@ -361,6 +363,18 @@ void Settings::Load(const std::filesystem::path& settingsFilePath) {
                 }
             }
         }
+
+        // TerrainDecalShadowRecoveryUseStencil
+        if (section.has("TerrainDecalShadowRecoveryUseStencil")) {
+            bool valid = false;
+            const std::string text = section.get("TerrainDecalShadowRecoveryUseStencil");
+            terrainDecalShadowRecoveryUseStencil_ = ParseBool(text, valid);
+            if (!valid) {
+                terrainDecalShadowRecoveryUseStencil_ = kDefaultTerrainDecalShadowRecoveryUseStencil;
+                LOG_ERROR("Invalid TerrainDecalShadowRecoveryUseStencil value '{}' in {}. Using default true.",
+                          text, settingsFilePath.string());
+            }
+        }
     }
     catch (const std::exception& e) {
         LOG_ERROR("Error reading settings file {}: {}", settingsFilePath.string(), e.what());
@@ -385,3 +399,4 @@ bool Settings::GetEnableTerrainDecalService() const noexcept { return enableTerr
 bool Settings::GetEnableCustomTerrainDecalRenderer() const noexcept { return enableCustomTerrainDecalRenderer_; }
 int Settings::GetTerrainDecalCustomDefaultDepthOffset() const noexcept { return terrainDecalCustomDefaultDepthOffset_; }
 float Settings::GetTerrainDecalShadowRecoveryOpacityScale() const noexcept { return terrainDecalShadowRecoveryOpacityScale_; }
+bool Settings::GetTerrainDecalShadowRecoveryUseStencil() const noexcept { return terrainDecalShadowRecoveryUseStencil_; }

@@ -13,6 +13,7 @@
 #include "TerrainDecalSymbols.h"
 
 class SC4DrawContext;
+class cIGZGDriver;
 struct IDirect3DDevice7;
 struct IDirectDrawSurface7;
 
@@ -28,6 +29,9 @@ namespace TerrainDecal
             // Default custom-rendered decal depth offset, used when a state has depthOffset == -1.
             int customDefaultDepthOffset = 2;
             float shadowRecoveryOpacityScale = 0.25f;
+            // Limit the shadow recovery redraw to one layer per pixel with the stencil buffer,
+            // on drivers that have one.
+            bool shadowRecoveryUseStencil = true;
         };
 
         explicit TerrainDecalHook(Options options = {});
@@ -54,6 +58,7 @@ namespace TerrainDecal
         static void __fastcall DrawShadowsCallThunk(void* overlayManager, void*, const float* worldToScreenMatrix, SC4DrawContext* drawContext, int* decalIds);
         static void __fastcall DrawShadowsRoughCallThunk(void* overlayManager, void*, const float* worldToScreenMatrix, SC4DrawContext* drawContext, int* decalIds);
         static void __fastcall SetTexTransform4CallThunk(SC4DrawContext* drawContext, void*, const float* matrix, int stage);
+        static void AroundStencilRecoveryDraw_(void* userData, SC4DrawContext* drawContext, bool before);
 
         void HandleDrawRectCall_(void* overlayManager, SC4DrawContext* drawContext, const cRZRect* rect);
         void HandleDrawShadowsCall_(const RelativeCallPatch& patch, void* overlayManager, const float* worldToScreenMatrix, SC4DrawContext* drawContext, int* decalIds);
@@ -63,6 +68,8 @@ namespace TerrainDecal
         void CallOriginalSetTexTransform4_(SC4DrawContext* drawContext, const float* matrix, int stage) const;
         void ReplayManagedDecalsAfterShadows_(void* overlayManager, const float* worldToScreenMatrix, SC4DrawContext* drawContext, int* decalIds);
         bool CompositeManagedDecalsAfterShadows_(void* overlayManager, const float* worldToScreenMatrix, SC4DrawContext* drawContext, int* decalIds);
+        [[nodiscard]] bool DriverHasStencil_(cIGZGDriver* driver);
+        void LogRecoveryMethod_(int method);
         bool EnsureRecoveryTarget_(IDirect3DDevice7* device, IDirectDrawSurface7* originalTarget);
         void ReleaseRecoveryTarget_() noexcept;
         void SetLastError_(std::string message);
@@ -81,6 +88,15 @@ namespace TerrainDecal
         bool currentTexTransformValid_ = false;
         bool shadowRecoveryActive_ = false;
         bool shadowRecoveryCaptureActive_ = false;
+
+        // Stencil shadow recovery: the claim pass marks each pixel with the topmost decal's
+        // number, the draw pass then draws each decal only where it holds the mark.
+        enum class StencilPass : uint8_t { None, Claim, Draw };
+        StencilPass stencilPass_ = StencilPass::None;
+        uint32_t stencilDecalNumber_ = 0;
+        cIGZGDriver* stencilCheckedDriver_ = nullptr;
+        bool stencilCheckedResult_ = false;
+        int loggedRecoveryMethod_ = -1;
         IDirect3DDevice7* recoveryDevice_ = nullptr;
         IDirectDrawSurface7* recoveryTarget_ = nullptr;
         IDirectDrawSurface7* recoveryDepth_ = nullptr;

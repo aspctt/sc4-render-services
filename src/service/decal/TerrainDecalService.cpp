@@ -239,6 +239,11 @@ void TerrainDecalService::SetShadowRecoveryOpacityScale(const float shadowRecove
     shadowRecoveryOpacityScale_ = shadowRecoveryOpacityScale;
 }
 
+void TerrainDecalService::SetShadowRecoveryUseStencil(const bool shadowRecoveryUseStencil) noexcept
+{
+    shadowRecoveryUseStencil_ = shadowRecoveryUseStencil;
+}
+
 bool TerrainDecalService::Init()
 {
     if (versionTag_ != 641) {
@@ -251,6 +256,7 @@ bool TerrainDecalService::Init()
         .enableCustomRenderer = enableCustomRenderer_,
         .customDefaultDepthOffset = customDefaultDepthOffset_,
         .shadowRecoveryOpacityScale = shadowRecoveryOpacityScale_,
+        .shadowRecoveryUseStencil = shadowRecoveryUseStencil_,
     });
 
     if (!renderHook_->Install()) {

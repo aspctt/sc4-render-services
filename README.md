@@ -20,7 +20,7 @@ Simtropolis file download page: https://community.simtropolis.com/files/file/374
 | Draw pass callbacks and draw context helpers | yes | yes | yes |
 | S3D camera service | yes | yes | yes |
 | Terrain decal service | yes | yes | yes |
-| Terrain decal shadow recovery | yes | in progress | in progress |
+| Terrain decal shadow recovery | yes | yes (stencil) | yes (overlaps darker) |
 | Raw DirectX 7 access (`AcquireD3DInterfaces`) | yes | no | no |
 
 `cIGZImGuiService::GetActiveDriverInfo` tells a plugin which driver is active.
@@ -99,6 +99,12 @@ TerrainDecalCustomDefaultDepthOffset=2
 ; Opacity scale for the post-shadow terrain decal recovery redraw.
 ; Lower values blend more softly with shadows. Valid range: 0.0 - 1.0.
 TerrainDecalShadowRecoveryOpacityScale=0.25
+
+; Draws the shadow recovery redraw once per pixel, from the topmost decal, using the
+; stencil buffer, so overlapping decals do not come out darker. Used with graphics drivers
+; that have a stencil buffer, such as SCD3D11. The game's built-in DirectX driver keeps its
+; own method. Set to false to draw every decal again instead.
+TerrainDecalShadowRecoveryUseStencil=true
 ```
 
 ## Build

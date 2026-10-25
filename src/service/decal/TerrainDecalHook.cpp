@@ -11,10 +11,12 @@
 
 #include "DX7InterfaceHook.h"
 #include "GZServPtrs.h"
+#include "cIGZGDriver.h"
 #include "cISC4App.h"
 #include "cISC4City.h"
 #include "cISTETerrain.h"
 #include "cISTETerrainView.h"
+#include "sGDMode.h"
 #include "utils/Logger.h"
 #include "utils/VersionDetection.h"
 
@@ -25,6 +27,60 @@ namespace TerrainDecal
     namespace
     {
         constexpr std::ptrdiff_t kOverlayManagerDecalDrawCountOffset = 0xD8;
+
+        // SC4DrawContext fields (docs/world-draw-design.md).
+        constexpr std::ptrdiff_t kContextDriverOffset = 0x30;
+        constexpr std::ptrdiff_t kContextRendererOffset = 0x38;
+        constexpr std::ptrdiff_t kContextRenderStateOffset = 0x80;
+        // Renderer -> options -> a flag that keeps alpha testing off whatever the state asks
+        // for. SC4DrawContext::SetRenderState (0x007D4530) checks it the same way.
+        constexpr std::ptrdiff_t kRendererOptionsOffset = 0x0C;
+        constexpr std::ptrdiff_t kOptionsAlphaTestOffOffset = 0x11C;
+
+        // The draw context's packed render state, as SC4DrawContext::SetRenderState applies it.
+        constexpr uint32_t kPackedColorWrite = 0x1;
+        constexpr uint32_t kPackedDepthWrite = 0x2;
+        constexpr uint32_t kPackedAlphaTest = 0x8;
+        constexpr uint32_t kPackedAlphaFuncShift = 10;
+        constexpr uint32_t kPackedAlphaRefShift = 21;
+        constexpr float kPackedAlphaRefScale = 1.0f / 15.0f;
+
+        // cIGZGDriver values.
+        constexpr uint32_t kDriverStateAlphaTest = 0;
+        constexpr uint32_t kDriverStateStencilTest = 2;
+        constexpr uint32_t kDriverClearStencil = 0x2000;
+        constexpr uint32_t kDriverTestEqual = 2;
+        constexpr uint32_t kDriverTestGreater = 4;
+        constexpr uint32_t kDriverTestAlways = 7;
+        constexpr uint32_t kDriverStencilKeep = 0;
+        constexpr uint32_t kDriverStencilReplace = 1;
+
+        enum RecoveryMethod : int
+        {
+            kRecoveryComposite = 0,
+            kRecoveryStencil = 1,
+            kRecoveryReplay = 2,
+        };
+
+        template <typename T>
+        [[nodiscard]] T ReadField(const void* const base, const std::ptrdiff_t offset) noexcept
+        {
+            T value{};
+            std::memcpy(&value, static_cast<const std::byte*>(base) + offset, sizeof(T));
+            return value;
+        }
+
+        [[nodiscard]] cIGZGDriver* ContextDriver(SC4DrawContext* const drawContext) noexcept
+        {
+            return drawContext ? ReadField<cIGZGDriver*>(drawContext, kContextDriverOffset) : nullptr;
+        }
+
+        [[nodiscard]] bool AlphaTestForcedOff(SC4DrawContext* const drawContext) noexcept
+        {
+            const auto* const renderer = ReadField<const std::byte*>(drawContext, kContextRendererOffset);
+            const auto* const options = renderer ? ReadField<const std::byte*>(renderer, kRendererOptionsOffset) : nullptr;
+            return options && options[kOptionsAlphaTestOffOffset] != std::byte{0};
+        }
 
         [[nodiscard]] bool IsRingDecalSlot(const std::byte* const slotBase) noexcept
         {
@@ -246,6 +302,58 @@ namespace TerrainDecal
         sActiveHook_->HandleSetTexTransform4Call_(drawContext, matrix, stage);
     }
 
+    void TerrainDecalHook::AroundStencilRecoveryDraw_(void* const userData,
+                                                      SC4DrawContext* const drawContext,
+                                                      const bool before)
+    {
+        const auto* const self = static_cast<TerrainDecalHook*>(userData);
+        cIGZGDriver* const driver = ContextDriver(drawContext);
+        if (!self || !driver) {
+            return;
+        }
+
+        // Numbers 1 to 255, 0 is the cleared value. Decals 255 apart share a number, which
+        // only matters where they overlap.
+        const int number = static_cast<int>(self->stencilDecalNumber_ % 255u) + 1;
+
+        if (self->stencilPass_ == StencilPass::Draw) {
+            if (before) {
+                driver->StencilFunc(kDriverTestEqual, number, 0xFF);
+                driver->StencilOp(kDriverStencilKeep, kDriverStencilKeep, kDriverStencilKeep);
+            }
+            return;
+        }
+
+        if (self->stencilPass_ != StencilPass::Claim) {
+            return;
+        }
+
+        if (before) {
+            // Mark the pixels this decal covers, without drawing anything. Fully transparent
+            // texels do not count, so decals below still show through them.
+            driver->ColorMask(false);
+            driver->DepthMask(false);
+            driver->AlphaFunc(kDriverTestGreater, 0.0f);
+            driver->Enable(kDriverStateAlphaTest);
+            driver->StencilFunc(kDriverTestAlways, number, 0xFF);
+            driver->StencilOp(kDriverStencilKeep, kDriverStencilKeep, kDriverStencilReplace);
+            return;
+        }
+
+        // Put back what the draw context's state cache says is set, so the cache stays true.
+        const auto state = ReadField<uint32_t>(drawContext, kContextRenderStateOffset);
+        driver->ColorMask((state & kPackedColorWrite) != 0);
+        driver->DepthMask((state & kPackedDepthWrite) != 0);
+        driver->AlphaFunc((state >> kPackedAlphaFuncShift) & 7u,
+                          static_cast<float>((state >> kPackedAlphaRefShift) & 0xFu) * kPackedAlphaRefScale);
+        if ((state & kPackedAlphaTest) != 0 && !AlphaTestForcedOff(drawContext)) {
+            driver->Enable(kDriverStateAlphaTest);
+        }
+        else {
+            driver->Disable(kDriverStateAlphaTest);
+        }
+    }
+
     void TerrainDecalHook::HandleDrawRectCall_(void* overlayManager, SC4DrawContext* drawContext, const cRZRect* rect)
     {
         DrawRequest request{
@@ -282,6 +390,13 @@ namespace TerrainDecal
         cISC4City* city = app ? app->GetCity() : nullptr;
         request.terrain = city ? city->GetTerrain() : nullptr;
         request.terrainView = request.terrain ? request.terrain->GetView() : nullptr;
+
+        if (shadowRecoveryActive_ && stencilPass_ != StencilPass::None) {
+            // Both passes see the same decals in the same order, so the numbers match up.
+            ++stencilDecalNumber_;
+            request.aroundDraw = &AroundStencilRecoveryDraw_;
+            request.aroundDrawUserData = this;
+        }
 
         const auto result = renderer_.Draw(request);
         currentTexTransformValid_ = false;
@@ -381,8 +496,13 @@ namespace TerrainDecal
         }
 
         if (CompositeManagedDecalsAfterShadows_(overlayManager, worldToScreenMatrix, drawContext, decalIds)) {
+            LogRecoveryMethod_(kRecoveryComposite);
             return;
         }
+
+        cIGZGDriver* const driver = ContextDriver(drawContext);
+        const bool useStencil = options_.shadowRecoveryUseStencil && DriverHasStencil_(driver);
+        LogRecoveryMethod_(useStencil ? kRecoveryStencil : kRecoveryReplay);
 
         currentTexTransformValid_ = false;
         currentTexTransformStage_ = -1;
@@ -396,7 +516,29 @@ namespace TerrainDecal
         const bool previousShadowRecoveryActive = shadowRecoveryActive_;
         shadowRecoveryActive_ = true;
         const auto drawDecals = reinterpret_cast<DrawOverlayPassFn>(addresses_->drawDecals);
-        drawDecals(overlayManager, worldToScreenMatrix, drawContext, decalIds);
+        if (useStencil) {
+            // The game never uses the stencil buffer, so it is ours to clear and use here.
+            driver->ClearStencil(0);
+            driver->Clear(kDriverClearStencil);
+            driver->StencilMask(0xFF);
+            driver->Enable(kDriverStateStencilTest);
+
+            for (const StencilPass pass : {StencilPass::Claim, StencilPass::Draw}) {
+                stencilPass_ = pass;
+                stencilDecalNumber_ = 0;
+                drawDecals(overlayManager, worldToScreenMatrix, drawContext, decalIds);
+                currentTexTransformValid_ = false;
+                currentTexTransformStage_ = -1;
+            }
+            stencilPass_ = StencilPass::None;
+
+            driver->StencilFunc(kDriverTestAlways, 0, 0xFF);
+            driver->StencilOp(kDriverStencilKeep, kDriverStencilKeep, kDriverStencilKeep);
+            driver->Disable(kDriverStateStencilTest);
+        }
+        else {
+            drawDecals(overlayManager, worldToScreenMatrix, drawContext, decalIds);
+        }
         shadowRecoveryActive_ = previousShadowRecoveryActive;
 
         std::memcpy(overlayManagerBytes + kOverlayManagerDecalDrawCountOffset,
@@ -610,6 +752,48 @@ namespace TerrainDecal
         // Once DrawDecals touched SC4's internal draw-context cache, do not run the
         // legacy replay in the same frame after restoring only the native D3D state.
         return success || captureStarted;
+    }
+
+    bool TerrainDecalHook::DriverHasStencil_(cIGZGDriver* const driver)
+    {
+        if (!driver) {
+            return false;
+        }
+        if (driver != stencilCheckedDriver_) {
+            // The current video mode says whether the depth buffer has stencil. scvk reports
+            // a stencil buffer while its stencil functions do nothing yet, which is harmless:
+            // the claim pass draws nothing and the draw pass then draws every decal.
+            // The driver copies its whole mode record. Leave room in case a driver's record is
+            // longer than the header's (the game's own may be 56 bytes).
+            struct PaddedMode
+            {
+                sGDMode mode;
+                std::byte spare[64];
+            } info{};
+            driver->GetVideoModeInfo(info.mode);
+            stencilCheckedDriver_ = driver;
+            stencilCheckedResult_ = info.mode.supportsStencilBuffer;
+        }
+        return stencilCheckedResult_;
+    }
+
+    void TerrainDecalHook::LogRecoveryMethod_(const int method)
+    {
+        if (method == loggedRecoveryMethod_) {
+            return;
+        }
+        loggedRecoveryMethod_ = method;
+        switch (method) {
+        case kRecoveryComposite:
+            LOG_INFO("TerrainDecalHook: decals are drawn again over shadows as one blended layer");
+            break;
+        case kRecoveryStencil:
+            LOG_INFO("TerrainDecalHook: decals are drawn again over shadows once per pixel, using the stencil buffer");
+            break;
+        default:
+            LOG_INFO("TerrainDecalHook: decals are drawn again over shadows one by one, overlapping decals come out a little darker");
+            break;
+        }
     }
 
     void TerrainDecalHook::SetLastError_(std::string message)

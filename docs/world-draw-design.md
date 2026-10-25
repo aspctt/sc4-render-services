@@ -243,6 +243,38 @@ Plan for decals:
 - Log once which shadow recovery method is in use, in plain words, so players know what to
   expect.
 
+### Stencil replay as built
+
+`TerrainDecalHook::ReplayManagedDecalsAfterShadows_`, behind
+`TerrainDecalShadowRecoveryUseStencil` (on by default):
+
+- **No reordering.** Instead of drawing the decals from the top down, the game's
+  `cSTEOverlayManager::DrawDecals` (`0x00736790`) runs twice in its own order. Each decal gets a
+  number from 1 to 255 in draw order. The claim pass draws with colour and depth writes off,
+  alpha test `> 0`, and stencil `ALWAYS` + `REPLACE`, so each pixel ends up holding the number
+  of the last, topmost decal that covers it with a visible texel. The draw pass draws normally
+  with stencil `EQUAL` to the decal's own number. Both passes see the same decals in the same
+  order, so the numbers line up. This avoids buffering geometry, textures and texture transforms
+  per decal.
+- **Per-draw state.** `DrawDecals` applies a packed render state per decal through
+  `SC4DrawContext::SetRenderState` (`0x007D4530`), cached at ctx`+0x80`. Bits: `0x1` colour
+  write, `0x2` depth write, `0x4` depth test, `0x8` alpha test (forced off when the renderer
+  option byte at `[[ctx+0x38]+0xC]+0x11C` is set), `0x10` blend, `0x20` texture, `0x40` cull,
+  `0x380` depth func, bits 10-12 alpha func, bits 21-24 alpha reference in fifteenths
+  (`0x00ABB4CC` = 1/15), bits 13-20 blend factors. The claim pass changes colour write, depth
+  write and alpha test on the driver right before the decal's `DrawPrims` and restores them from
+  that cache right after, so the cache stays true. `SetRenderState` itself can't be used for
+  this: it ends by resetting texture wrap, filtering and both texture transforms.
+- **Stencil support** comes from `cIGZGDriver::GetVideoModeInfo(sGDMode&)`,
+  `supportsStencilBuffer` at `+0x21`, cached per driver object. SCD3D11 reports whether its
+  device has `D24S8`. scvk always reports true while its stencil functions are empty and its
+  `ColorMask` works, so there the claim pass draws nothing and the draw pass is the plain
+  replay. Once scvk implements stencil it gets the full method with no change here. The mode
+  is read into a padded buffer because the game's own record may be longer than the header's.
+- The stencil is cleared with `ClearStencil(0)` + `Clear(0x2000)` before the claim pass, and
+  stencil test is disabled again afterwards. The built-in DX7 driver keeps the composite and
+  never reaches this path.
+
 ## Out of scope
 
 These need render targets, readback or shaders. The fixed-function driver interface offers

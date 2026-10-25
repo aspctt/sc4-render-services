@@ -40,6 +40,7 @@ public:
     void SetEnableCustomRenderer(bool enableCustomRenderer) noexcept;
     void SetCustomDefaultDepthOffset(int customDefaultDepthOffset) noexcept;
     void SetShadowRecoveryOpacityScale(float shadowRecoveryOpacityScale) noexcept;
+    void SetShadowRecoveryUseStencil(bool shadowRecoveryUseStencil) noexcept;
     bool Init() override;
     bool Shutdown();
     bool HandleMessage(cIGZMessage2* message);
@@ -74,5 +75,6 @@ private:
     bool enableCustomRenderer_ = true;
     int customDefaultDepthOffset_ = 2;
     float shadowRecoveryOpacityScale_ = 0.25f;
+    bool shadowRecoveryUseStencil_ = true;
     bool cityLoaded_ = false;
 };

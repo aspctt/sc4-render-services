@@ -1241,12 +1241,18 @@ namespace TerrainDecal
             }
         }
 
+        if (request.aroundDraw) {
+            request.aroundDraw(request.aroundDrawUserData, request.drawContext, true);
+        }
         const auto drawPrims = reinterpret_cast<DrawPrimsFn>(request.addresses->drawPrims);
         drawPrims(request.drawContext,
                   kPrimTypeTriangleList,
                   kTerrainVertexFormat,
                   static_cast<uint32_t>(outputVertices.size()),
                   outputVertices.data());
+        if (request.aroundDraw) {
+            request.aroundDraw(request.aroundDrawUserData, request.drawContext, false);
+        }
         if (hasUvOverride || debugOverridesActive) {
             LOG_TRACE("TerrainDecalRenderer: overlay {} submitted {} vertices", overlayId, outputVertices.size());
         }

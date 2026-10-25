@@ -13,6 +13,27 @@ Relevant ini settings:
 - `EnableCustomTerrainDecalRenderer=true`
 - `TerrainDecalCustomDefaultDepthOffset=2` (vanilla decals use `2`; shadows use `3`)
 - `TerrainDecalShadowRecoveryOpacityScale=0.25` (post-shadow recovery redraw opacity; lower blends more softly)
+- `TerrainDecalShadowRecoveryUseStencil=true` (one recovery layer per pixel on drivers with a
+  stencil buffer, see below)
+
+## Shadow recovery
+
+The game draws its shadows over terrain decals, which can hide them almost completely. After
+the shadow pass the service draws the decals again, faintly, so they stay visible. How it
+does that depends on the graphics driver:
+
+| Driver | Method |
+|---|---|
+| Built-in DirectX | All decals are drawn into an offscreen image, which is blended over the scene once. |
+| SCD3D11 | Stencil: each pixel gets one layer, from the topmost decal there. |
+| scvk | Each decal is drawn again on its own, until scvk implements stencil. |
+
+Drawing every decal again on its own makes overlapping decals come out a little darker than
+the offscreen image does. The stencil method avoids that: a first pass marks each pixel with
+the topmost decal that covers it, and a second pass lets each decal draw only on its own
+pixels. It is used when the driver's video mode reports a stencil buffer. Set
+`TerrainDecalShadowRecoveryUseStencil=false` to draw every decal again instead. The log says
+once which method is in use.
 
 ## What It Adds
 
