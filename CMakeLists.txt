@@ -178,6 +178,7 @@ set(CUSTOM_SERVICES_SOURCES
         ${SC4RS_ROOT}/src/utils/Logger.cpp
         ${SC4RS_ROOT}/src/utils/Settings.cpp
         ${SC4RS_ROOT}/src/DX7InterfaceHook.cpp
+        ${SC4RS_ROOT}/src/backends/imgui_impl_gzgdriver.cpp
 )
 
 add_library(SC4RenderServices SHARED
@@ -188,6 +189,7 @@ add_library(SC4RenderServices SHARED
 
 target_include_directories(SC4RenderServices PRIVATE
         ${SC4RS_ROOT}/src
+        ${SC4RS_ROOT}/src/backends
         ${SC4RS_ROOT}/src/service
         ${IMGUI_DIR}
         ${MINI_INCLUDE_DIR}

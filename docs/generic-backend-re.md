@@ -235,6 +235,44 @@ Open items:
 - The dirty-flag cadence and the snapshot/thumbnail exclusion above need checking in
   game.
 
+## Step 5: driver details the backend relies on
+
+Native DirectX driver (all **verified** in the Windows binary, renamed in Ghidra):
+- `cGDriver::SetTexture(texture, stage)` `0x00884810` (`+0xE8`) and `GetTexture(stage)`
+  `0x00884860` (`+0xEC`) read and write the same per-stage field
+  (`[this+0x11C] + stage*0x80 + 4`). SCD3D11 behaves the same way. The backend saves the
+  game's stage 0/1 bindings with `GetTexture` and restores them with `SetTexture`.
+- `cGDriver::TexImage2D` `0x00884880` (`+0x64`) creates the surface through
+  `nSGLDX7::cTextureManager::CreateTexure`, then always loads level 0 from the pixel pointer
+  without a null check. **Never pass null pixels.** Its row length comes from `PixelStore`
+  (`this+0x134`).
+- `cGDriver::LoadTextureLevel(texture, level, x, y, w, h, format, type, rowLength, pixels)`
+  `0x00883040` (`+0xF4`) uses the same loader; `rowLength` 0 means `w`.
+
+SCD3D11 (source): texture target 0; internal format 4 = RGBA8 (stored B8G8R8A8); upload
+format 3 = BGRA with type 1 = unsigned byte is its no-conversion path (any other combination
+is converted per texel through `double`); `TexParameter` changes the active stage's sampler
+(0 mag, 1 min, 2 wrap U, 3 wrap V; filter 1 linear, wrap 2 clamp); `TexEnv(0, 0, 1)` is
+modulate; primitive 0 = triangles; index type 3 = `uint16`; blend 4/5 = SrcAlpha/InvSrcAlpha;
+`InterleavedArrays` stride 0 = packed. Format 10 is position@0, BGRA@12, UV@16, stride 24;
+the backend checks this through `VertexFormatStride`/`VertexFormatElementOffset` at init.
+
+Device loss: SCD3D11 recreates textures after device removal with their names and sizes but
+**blank contents**, so `IsTexture` stays true and the backend's per-frame `IsTexture` check
+cannot see it. There is no driver-neutral notification. Correction: the `0x4FA845B` /
+`0x652294C7` pair the native `Flush` passes on device loss are the message server's service
+IDs (`cRZSysServPtr<cIGZMessageServer2, 0x652294C7, 0x4FA845B>`), not a message.
+
+### Open: intermittent hang/crash on SCD3D11 + AMD
+
+Two of the first five runs with the generic renderer on SCD3D11 (AMD RX 7900 XTX, ReShade
+add-on loaded) failed: an access violation in `amdxx32.dll` on an AMD worker thread after
+about a minute, and a freeze within 10 s. In both the render thread was in our hook's
+`driver->Flush()` → SCD3D11 → DXGI Present, waiting inside the AMD driver; no RS code was on
+its stack (`FlushHook_` tail-calls `Flush`). Three later runs (renderer without panels, with
+the demo windows, and with simulated mouse input for 40 s) stayed responsive at ~1,500 fps.
+An earlier `amdxx32.dll` crash (2026-09-27) predates this work. Not attributed yet.
+
 ## Plan corrections found so far
 
 - The repository state in the plan was out of date. The SCGL→SCD3D11 rename is

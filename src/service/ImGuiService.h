@@ -14,6 +14,8 @@
 #include "cRZBaseSystemService.h"
 #include "public/cIGZImGuiService.h"
 
+class cIGZGDriver;
+
 struct ImGuiInitSettings
 {
     float fontSize = 13.0f;
@@ -133,9 +135,16 @@ private:
         delete static_cast<FnType*>(data);
     }
 
-    // Builds one ImGui frame from the registered panels and the render queue. The
-    // renderer backend calls this from its frame hook and then draws ImGui::GetDrawData().
-    void BuildFrame_();
+    // Replaces the game's per-frame cIGZGDriver::Flush call in cGZGraphicSystem::Draw: draws
+    // ImGui over the finished frame, then presents it.
+    static void __fastcall FlushHook_(cIGZGDriver* driver);
+    void RenderOverlay_(cIGZGDriver* driver);
+    // Builds one ImGui frame from the registered panels and the render queue. Returns false
+    // when no frame was built, in which case there is nothing to render.
+    bool BuildFrame_();
+    void ResyncGameStateCache_();
+    bool InstallFlushHook_();
+    void RemoveFlushHook_();
     bool EnsureInitialized_();
     bool CreateContext_(HWND hwnd);
     void DestroyContext_();
@@ -176,6 +185,11 @@ private:
     WNDPROC originalWndProc_;
     std::atomic<bool> initialized_;
     std::atomic<bool> imguiInitialized_;
+    cIGZGDriver* rendererDriver_;
+    bool rendererReady_;
+    bool rendererFailed_;
+    bool flushHookInstalled_;
+    bool inFrame_;  // Between the renderer's NewFrame and RenderDrawData: driver calls are safe.
     bool hookInstalled_;
     bool warnedNoDriver_;
     bool warnedMissingWindow_;

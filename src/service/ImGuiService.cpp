@@ -4,18 +4,24 @@
 
 #include <algorithm>
 #include <atomic>
+#include <cstring>
 #include <d3d.h>
+#include <exception>
 #include <filesystem>
 #include <ranges>
 
 #include "cIGZFrameWorkW32.h"
 #include "cIGZGraphicSystem2.h"
+#include "cISC43DRender.h"
+#include "cISC4View3DWin.h"
 #include "cRZAutoRefCount.h"
 #include "cRZCOMDllDirector.h"
 #include "DX7InterfaceHook.h"
 #include "GZServPtrs.h"
+#include "imgui_impl_gzgdriver.h"
 #include "imgui_impl_win32.h"
 #include "public/ImGuiServiceIds.h"
+#include "SC4UI.h"
 #include "utils/Fonts.h"
 #include "utils/Logger.h"
 #include "utils/VersionDetection.h"
@@ -23,6 +29,21 @@
 namespace {
     std::atomic<ImGuiService*> g_instance{nullptr};
     std::atomic<DWORD> g_renderThreadId{0};
+
+    // The per-frame present at the end of cGZGraphicSystem::Draw (docs/generic-backend-re.md):
+    //   0098e765  8b 10              mov  edx, [eax]
+    //   0098e767  8b c8              mov  ecx, eax              ; cIGZGDriver*
+    //   0098e769  ff 92 ac 00 00 00  call [edx+0xac]            ; Flush()  <-- call FlushHook_; nop
+    //   0098e76f  88 5e 26           mov  [esi+0x26], bl
+    constexpr uintptr_t kFlushCallGuardAddress = 0x0098E765;
+    constexpr uintptr_t kFlushCallSiteAddress = 0x0098E769;
+    constexpr uint8_t kFlushCallGuardBytes[] = {
+        0x8B, 0x10, 0x8B, 0xC8, 0xFF, 0x92, 0xAC, 0x00, 0x00, 0x00, 0x88, 0x5E, 0x26};
+    constexpr uint8_t kFlushCallOriginalBytes[] = {0xFF, 0x92, 0xAC, 0x00, 0x00, 0x00};
+
+    // SC4DrawContext thunks, as DrawService binds them.
+    constexpr uintptr_t kGetDrawContextAddress = 0x004E82A0;
+    constexpr uintptr_t kSetDefaultRenderStateUnilaterallyAddress = 0x007D5230;
 
     bool IsRenderThreadCallAllowed_(const char* operation, const bool allowBeforeRenderThreadKnown) {
         const DWORD threadId = GetCurrentThreadId();
@@ -55,6 +76,11 @@ ImGuiService::ImGuiService()
       , originalWndProc_(nullptr)
       , initialized_(false)
       , imguiInitialized_(false)
+      , rendererDriver_(nullptr)
+      , rendererReady_(false)
+      , rendererFailed_(false)
+      , flushHookInstalled_(false)
+      , inFrame_(false)
       , hookInstalled_(false)
       , warnedNoDriver_(false)
       , warnedMissingWindow_(false)
@@ -151,20 +177,23 @@ bool ImGuiService::Shutdown() {
         fontAtlasRebuildPending_ = false;
     }
 
-    // Clean up all textures before shutting down ImGui
+    // Forget textures without calling the driver, which may already be shut down.
     {
         std::lock_guard textureLock(texturesMutex_);
-        for (auto& texture : textures_ | std::views::values) {
-            ReleaseDriverTexture_(texture);
-        }
         textures_.clear();
         pendingTextureReleaseIds_.clear();
     }
 
+    RemoveFlushHook_();
     RemoveWndProcHook_();
+    if (rendererReady_) {
+        ImGui_ImplGZGDriver_Shutdown();
+    }
     DestroyContext_();
     DX7InterfaceHook::ReleaseInterface();
 
+    rendererReady_ = false;
+    rendererDriver_ = nullptr;
     imguiInitialized_ = false;
     hookInstalled_ = false;
     deviceLost_ = false;
@@ -321,14 +350,157 @@ bool ImGuiService::AcquireD3DInterfaces(IDirect3DDevice7** outD3D, IDirectDraw7*
 }
 
 bool ImGuiService::IsDeviceReady() const {
-    return imguiInitialized_ && !deviceLost_;
+    return imguiInitialized_ && rendererReady_ && !deviceLost_;
 }
 
 uint32_t ImGuiService::GetDeviceGeneration() const {
     return deviceGeneration_.load(std::memory_order_acquire);
 }
 
-void ImGuiService::BuildFrame_() {
+void __fastcall ImGuiService::FlushHook_(cIGZGDriver* driver) {
+    if (auto* instance = g_instance.load(std::memory_order_acquire)) {
+        instance->RenderOverlay_(driver);
+    }
+    driver->Flush();
+}
+
+void ImGuiService::RenderOverlay_(cIGZGDriver* driver) {
+    if (!initialized_ || !imguiInitialized_ || !ImGui::GetCurrentContext()) {
+        return;
+    }
+
+    if (driver != rendererDriver_) {
+        if (!rendererReady_) {
+            rendererReady_ = ImGui_ImplGZGDriver_Init(driver);
+            if (!rendererReady_) {
+                if (!rendererFailed_) {
+                    LOG_ERROR("ImGuiService: this graphics driver cannot run the ImGui renderer; ImGui stays hidden");
+                    rendererFailed_ = true;
+                }
+                return;
+            }
+            LOG_INFO("ImGuiService: ImGui renderer ready on driver clsid=0x{:08X}", driver->GetGZCLSID());
+        }
+        else {
+            // A new driver object (video mode change): its textures are not the old ones.
+            LOG_INFO("ImGuiService: graphics driver changed, recreating textures");
+            OnDeviceLost_();
+            OnDeviceRestored_();
+        }
+        rendererDriver_ = driver;
+    }
+
+    // Panel code runs inside, so nothing may unwind into the game's frame.
+    try {
+        inFrame_ = true;
+        ImGui_ImplWin32_NewFrame();
+        ImGui_ImplGZGDriver_NewFrame(driver);
+        if (BuildFrame_()) {
+            ImGui_ImplGZGDriver_RenderDrawData(ImGui::GetDrawData());
+        }
+        inFrame_ = false;
+        ResyncGameStateCache_();
+    }
+    catch (const std::exception& e) {
+        inFrame_ = false;
+        static bool s_logged = false;
+        if (!s_logged) {
+            LOG_ERROR("ImGuiService: exception while drawing ImGui: {}", e.what());
+            s_logged = true;
+        }
+    }
+
+    // How often the game presents decides how often ImGui updates; report it once.
+    static ULONGLONG s_firstFrameTick = 0;
+    static uint32_t s_frames = 0;
+    if (s_firstFrameTick != ~0ull) {
+        const ULONGLONG now = GetTickCount64();
+        if (s_firstFrameTick == 0) {
+            s_firstFrameTick = now;
+        }
+        ++s_frames;
+        if (now - s_firstFrameTick >= 10000) {
+            LOG_INFO("ImGuiService: {} frames presented in the first 10 s", s_frames);
+            s_firstFrameTick = ~0ull;
+        }
+    }
+}
+
+void ImGuiService::ResyncGameStateCache_() {
+    // SC4DrawContext caches render state above the driver, so after ImGui changed it behind the
+    // cache's back, make the cache issue everything again. Only city view has one.
+    const auto view3DWin = SC4UI::GetView3DWin();
+    if (!view3DWin) {
+        return;
+    }
+    cISC43DRender* renderer = view3DWin->GetRenderer();
+    if (!renderer) {
+        return;
+    }
+    const auto getDrawContext = reinterpret_cast<void* (__thiscall*)(void*)>(kGetDrawContextAddress);
+    const auto resetState = reinterpret_cast<void (__thiscall*)(void*)>(kSetDefaultRenderStateUnilaterallyAddress);
+    if (void* drawContext = getDrawContext(renderer)) {
+        resetState(drawContext);
+    }
+}
+
+bool ImGuiService::InstallFlushHook_() {
+    if (flushHookInstalled_) {
+        return true;
+    }
+
+    auto* guard = reinterpret_cast<uint8_t*>(kFlushCallGuardAddress);
+    if (std::memcmp(guard, kFlushCallGuardBytes, sizeof(kFlushCallGuardBytes)) != 0) {
+        LOG_ERROR("ImGuiService: unexpected bytes at the frame present (0x{:08X}); another plugin may have patched it",
+                  static_cast<uint32_t>(kFlushCallGuardAddress));
+        return false;
+    }
+
+    // call rel32 to FlushHook_, then a nop over the sixth byte of the original indirect call.
+    uint8_t patch[sizeof(kFlushCallOriginalBytes)] = {0xE8, 0, 0, 0, 0, 0x90};
+    const auto rel = static_cast<int32_t>(reinterpret_cast<uintptr_t>(&ImGuiService::FlushHook_) -
+                                          (kFlushCallSiteAddress + 5));
+    std::memcpy(patch + 1, &rel, sizeof(rel));
+
+    auto* site = reinterpret_cast<uint8_t*>(kFlushCallSiteAddress);
+    DWORD oldProtect = 0;
+    if (!VirtualProtect(site, sizeof(patch), PAGE_EXECUTE_READWRITE, &oldProtect)) {
+        LOG_ERROR("ImGuiService: VirtualProtect failed for the frame present hook");
+        return false;
+    }
+    std::memcpy(site, patch, sizeof(patch));
+    FlushInstructionCache(GetCurrentProcess(), site, sizeof(patch));
+    VirtualProtect(site, sizeof(patch), oldProtect, &oldProtect);
+
+    flushHookInstalled_ = true;
+    LOG_INFO("ImGuiService: hooked the frame present at 0x{:08X}", static_cast<uint32_t>(kFlushCallSiteAddress));
+    return true;
+}
+
+void ImGuiService::RemoveFlushHook_() {
+    if (!flushHookInstalled_) {
+        return;
+    }
+
+    auto* site = reinterpret_cast<uint8_t*>(kFlushCallSiteAddress);
+    if (site[0] != 0xE8) {
+        LOG_WARN("ImGuiService: frame present hook was overwritten by another module, leaving it");
+        flushHookInstalled_ = false;
+        return;
+    }
+
+    DWORD oldProtect = 0;
+    if (!VirtualProtect(site, sizeof(kFlushCallOriginalBytes), PAGE_EXECUTE_READWRITE, &oldProtect)) {
+        LOG_ERROR("ImGuiService: VirtualProtect failed while removing the frame present hook");
+        return;
+    }
+    std::memcpy(site, kFlushCallOriginalBytes, sizeof(kFlushCallOriginalBytes));
+    FlushInstructionCache(GetCurrentProcess(), site, sizeof(kFlushCallOriginalBytes));
+    VirtualProtect(site, sizeof(kFlushCallOriginalBytes), oldProtect, &oldProtect);
+    flushHookInstalled_ = false;
+}
+
+bool ImGuiService::BuildFrame_() {
     static auto loggedFirstFrame = false;
     const DWORD threadId = GetCurrentThreadId();
     const DWORD prevThreadId = g_renderThreadId.load(std::memory_order_acquire);
@@ -342,13 +514,13 @@ void ImGuiService::BuildFrame_() {
         g_renderThreadId.store(threadId, std::memory_order_release);
     }
     if (!imguiInitialized_ || !ImGui::GetCurrentContext()) {
-        return;
+        return false;
     }
 
     {
         std::lock_guard lock(panelsMutex_);
         if (!initialized_) {
-            return;
+            return false;
         }
     }
 
@@ -359,7 +531,6 @@ void ImGuiService::BuildFrame_() {
     InitializePanels_();
     ProcessPendingFontRegistrations_();
 
-    ImGui_ImplWin32_NewFrame();
     ImGui::NewFrame();
 
     std::vector<ImGuiPanelDesc> panelsToUpdate;
@@ -422,6 +593,7 @@ void ImGuiService::BuildFrame_() {
         LOG_INFO("ImGuiService: built first frame with {} panel(s)", panelsToRender.size());
         loggedFirstFrame = true;
     }
+    return true;
 }
 
 bool ImGuiService::EnsureInitialized_() {
@@ -472,7 +644,11 @@ bool ImGuiService::EnsureInitialized_() {
     if (!InstallWndProcHook_(hwnd)) {
         LOG_WARN("ImGuiService: failed to install WndProc hook");
     }
-    LOG_INFO("ImGuiService: ImGui context created; no renderer backend is installed yet");
+    if (!InstallFlushHook_()) {
+        LOG_ERROR("ImGuiService: ImGui context created, but without the frame hook nothing will be drawn");
+        return true;
+    }
+    LOG_INFO("ImGuiService: ImGui context created");
     return true;
 }
 
@@ -514,8 +690,8 @@ bool ImGuiService::CreateContext_(const HWND hwnd) {
 
     // Configure font rendering
     ImFontConfig fontConfig;
-    fontConfig.OversampleH = settings.fontOversample;
-    fontConfig.OversampleV = settings.fontOversample;
+    fontConfig.OversampleH = static_cast<ImS8>(settings.fontOversample);
+    fontConfig.OversampleV = static_cast<ImS8>(settings.fontOversample);
     fontConfig.PixelSnapH = true;
     fontConfig.GlyphExtraAdvanceX = 0.0f;
 
@@ -724,21 +900,9 @@ ImGuiTextureHandle ImGuiService::CreateTexture(const ImGuiTextureDesc& desc) {
         }
     }
 
-    // Only the render thread may talk to the driver. Before the render thread is known,
-    // create a deferred entry and let GetTextureID() realize it later.
-    if (!renderThreadKnown) {
-        tex.needsRecreation = true;
-        LOG_WARN("ImGuiService::CreateTexture: render thread not established yet, deferring texture creation (id={})", tex.id);
-    }
-    else if (IsDeviceReady()) {
-        if (!CreateDriverTexture_(tex)) {
-            LOG_WARN("ImGuiService::CreateTexture: texture creation failed, will retry later (id={})", tex.id);
-            tex.needsRecreation = true;
-        }
-    }
-    else {
-        tex.needsRecreation = true;
-    }
+    // The driver texture is made on first use by GetTextureID(), inside the ImGui frame: only
+    // there are driver calls safe from disturbing the game's own texture bindings.
+    tex.needsRecreation = true;
 
     const uint32_t textureId = tex.id;
 
@@ -781,6 +945,12 @@ void* ImGuiService::GetTextureID(const ImGuiTextureHandle handle) {
     ManagedTexture& tex = it->second;
     if (tex.pendingDestroy) {
         return nullptr;
+    }
+
+    // A driver may drop textures (device loss); recreate from the kept pixels.
+    if (tex.driverTexture != 0 && inFrame_ && !ImGui_ImplGZGDriver_IsTextureAlive(tex.driverTexture)) {
+        tex.driverTexture = 0;
+        tex.needsRecreation = true;
     }
 
     // Recreate the driver texture if needed
@@ -1061,13 +1231,29 @@ void ImGuiService::ProcessPendingFontRegistrations_() {
 }
 
 bool ImGuiService::CreateDriverTexture_(ManagedTexture& tex) {
-    // Driver textures come from the cIGZGDriver renderer backend, which is not installed
-    // yet. The RGBA source data is kept, so textures are realized once it is.
-    (void)tex;
-    return false;
+    if (!inFrame_ || !rendererReady_) {
+        return false;
+    }
+
+    const uint32_t texture = ImGui_ImplGZGDriver_CreateTexture(
+        tex.sourceData.data(), static_cast<int>(tex.width), static_cast<int>(tex.height));
+    if (texture == 0) {
+        LOG_WARN("ImGuiService::CreateDriverTexture_: driver texture creation failed (id={}, {}x{})",
+                 tex.id, tex.width, tex.height);
+        return false;
+    }
+
+    tex.driverTexture = texture;
+    tex.needsRecreation = false;
+    tex.creationGeneration = deviceGeneration_.load(std::memory_order_acquire);
+    return true;
 }
 
 void ImGuiService::ReleaseDriverTexture_(ManagedTexture& tex) {
+    // Outside the frame the texture is only forgotten: the driver may be gone or replaced.
+    if (tex.driverTexture != 0 && inFrame_ && rendererReady_) {
+        ImGui_ImplGZGDriver_DestroyTexture(tex.driverTexture);
+    }
     tex.driverTexture = 0;
 }
 
