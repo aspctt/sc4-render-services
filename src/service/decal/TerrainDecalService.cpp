@@ -594,7 +594,7 @@ bool TerrainDecalService::CaptureLiveState_(const TerrainDecalRecord& record, Te
     state.enabled = overlayManager->OverlayIsEnabled(overlayId);
     state.drawMode = overlayManager->OverlayDrawMode(overlayId);
     state.flags = overlayManager->OverlayFlags(overlayId);
-    (void)overlayManager->OverlayColor(overlayId, state.color);
+    state.color = overlayManager->OverlayColor(overlayId);
     return true;
 }
 
