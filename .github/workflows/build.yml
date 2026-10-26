@@ -26,7 +26,7 @@ jobs:
           cmakeVersion: "4.0.2"
 
       - name: Configure (Debug)
-        run: cmake --preset vs2022-win32-debug
+        run: cmake --preset vs2022-win32-debug -DSC4RS_BUILD_SAMPLES=ON
 
       - name: Build (Debug, all DLLs)
         run: cmake --build --preset vs2022-win32-debug-all
@@ -71,7 +71,7 @@ jobs:
         run: choco install nsis -y
 
       - name: Configure (Release)
-        run: cmake --preset vs2022-win32-release "-DSC4RS_RELEASE_VERSION=${{ github.ref_name }}"
+        run: cmake --preset vs2022-win32-release -DSC4RS_BUILD_SAMPLES=ON "-DSC4RS_RELEASE_VERSION=${{ github.ref_name }}"
 
       - name: Build (Release, all DLLs)
         run: cmake --build --preset vs2022-win32-release-all

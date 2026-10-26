@@ -127,8 +127,23 @@ cmake --build cmake-build-debug-visual-studio --config Debug
 ```
 
 Pass `-DCMAKE_BUILD_TYPE=Debug` for a Debug build: it picks the matching debug C runtime.
+Only `SC4RenderServices.dll` is built by default. Add `-DSC4RS_BUILD_SAMPLES=ON` to build the
+sample DLLs too.
 When the build finds SimCity 4 it copies the DLLs into your Plugins folder. Set the `CI`
 environment variable to turn that off.
+
+### As a dependency
+
+A plugin can add this repository with `add_subdirectory`. Pass `EXCLUDE_FROM_ALL` so only what
+the plugin links gets built, and link the exported ImGui with `sc4rs_use_imgui`:
+```cmake
+add_subdirectory(vendor/sc4-render-services EXCLUDE_FROM_ALL)
+sc4rs_use_imgui(MyPlugin)
+```
+As a subproject it leaves the generator platform to the parent, never builds the samples, and
+does not deploy to the Plugins folder. It reuses the parent's `spdlog` or `spdlog::spdlog` target
+and its `gzcom2` or `gzcom_dll` target when those exist, so that gzcom-dll must be at least as new
+as the one in `vendor/gzcom-dll`.
 
 ## Outputs
 
@@ -136,7 +151,7 @@ Required (deployed to `...\Documents\SimCity 4\Plugins\`):
 - `SC4RenderServices.dll`
 - `SC4RenderServices.ini`
 
-Optional samples (deployed to `...\Documents\SimCity 4\Plugins\`):
+Optional samples (built with `-DSC4RS_BUILD_SAMPLES=ON`, deployed to `...\Documents\SimCity 4\Plugins\`):
 - `SC4ImGuiSample.dll` (basic panel)
 - `SC4ImGuiSampleCity.dll` (city-view only)
 - `SC4ImGuiSampleDemo.dll` (ImGui demo window)
