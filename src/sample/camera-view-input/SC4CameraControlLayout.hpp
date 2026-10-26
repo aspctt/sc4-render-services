@@ -12,6 +12,8 @@
 #include <cstddef>
 #include <cstdint>
 
+#include <Windows.h>
+
 struct SC4Float4
 {
     float fX;
