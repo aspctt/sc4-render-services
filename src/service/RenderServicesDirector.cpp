@@ -1,6 +1,7 @@
 #include "DrawService.h"
 #include "ImGuiService.h"
 #include "S3DCameraService.h"
+#include "WorldDrawService.h"
 #include "decal/TerrainDecalService.h"
 
 #include "GZServPtrs.h"
@@ -34,6 +35,7 @@ namespace {
 
     struct DemoPanelState {
         bool showDemoWindow;
+        const cIGZImGuiService* service;
     };
 
     std::wstring GetModulePath(HMODULE moduleHandle) {
@@ -63,6 +65,28 @@ namespace {
         }
         const std::filesystem::path temp(GetModulePath(moduleHandle));
         return temp.parent_path();
+    }
+
+    // ImGui now lives in SC4RenderServices.dll. A leftover imgui.dll in the game's Apps folder is
+    // only loaded by plugins built for an older SC4RenderServices. They no longer get the ImGui
+    // service, so their UI stays hidden until they are rebuilt.
+    void WarnAboutLegacyImGuiDll(const char* when) {
+        if (const HMODULE legacy = GetModuleHandleW(L"imgui.dll")) {
+            std::string path = "?";
+            try {
+                path = std::filesystem::path(GetModulePath(legacy)).string();
+            } catch (const std::exception&) {}
+            LOG_WARN("RenderServicesDirector ({}): an old imgui.dll is loaded from {}. A plugin built for an older "
+                     "SC4RenderServices loaded it; that plugin gets no ImGui UI until it is rebuilt.", when, path);
+            return;
+        }
+        try {
+            const auto legacyFile = std::filesystem::path(GetModulePath(nullptr)).parent_path() / "imgui.dll";
+            if (std::filesystem::exists(legacyFile)) {
+                LOG_WARN("RenderServicesDirector ({}): {} is no longer needed and can be deleted. ImGui is now part "
+                         "of SC4RenderServices.dll.", when, legacyFile.string());
+            }
+        } catch (const std::exception&) {}
     }
 }
 
@@ -113,9 +137,11 @@ public:
                  settings.GetEnableDrawService(),
                  settings.GetEnableTerrainDecalService(),
                  settings.GetEnableCustomTerrainDecalRenderer());
-        LOG_INFO("RenderServicesDirector: terrain decal renderer settings (DefaultDepthOffset={}, ShadowRecoveryOpacityScale={})",
+        LOG_INFO("RenderServicesDirector: terrain decal renderer settings (DefaultDepthOffset={}, ShadowRecoveryOpacityScale={}, ShadowRecoveryUseStencil={})",
                  settings.GetTerrainDecalCustomDefaultDepthOffset(),
-                 settings.GetTerrainDecalShadowRecoveryOpacityScale());
+                 settings.GetTerrainDecalShadowRecoveryOpacityScale(),
+                 settings.GetTerrainDecalShadowRecoveryUseStencil());
+        WarnAboutLegacyImGuiDll("startup");
 
         if (!mpFrameWork) {
             LOG_WARN("RenderServicesDirector: framework not available");
@@ -134,6 +160,12 @@ public:
         const std::string fontFile = settings.GetFontFile();
         if (!fontFile.empty() && !dllFolderPath.empty()) {
             imguiSettings.fontFile = (dllFolderPath / fontFile).string();
+        }
+
+        // The window/docking layout is saved next to the DLL, like SC4RenderServices.ini
+        const std::string layoutFile = settings.GetLayoutFile();
+        if (!layoutFile.empty() && !dllFolderPath.empty()) {
+            imguiSettings.layoutFile = (dllFolderPath / layoutFile).string();
         }
 
         // Register ImGui service (641-gated inside Init)
@@ -171,6 +203,13 @@ public:
             if (drawService_.Init()) {
                 mpFrameWork->AddSystemService(&drawService_);
                 LOG_INFO("RenderServicesDirector: DrawService registered");
+                ImGuiService* const imgui = settings.GetEnableImGuiService() ? &imguiService_ : nullptr;
+                worldDrawService_.SetDependencies(&drawService_, imgui);
+                if (worldDrawService_.Init()) {
+                    mpFrameWork->AddSystemService(&worldDrawService_);
+                    worldDrawServiceRegistered_ = true;
+                    LOG_INFO("RenderServicesDirector: WorldDrawService registered");
+                }
             } else {
                 LOG_WARN("RenderServicesDirector: DrawService not registered (version check failed)");
             }
@@ -182,6 +221,7 @@ public:
             terrainDecalService_.SetEnableCustomRenderer(settings.GetEnableCustomTerrainDecalRenderer());
             terrainDecalService_.SetCustomDefaultDepthOffset(settings.GetTerrainDecalCustomDefaultDepthOffset());
             terrainDecalService_.SetShadowRecoveryOpacityScale(settings.GetTerrainDecalShadowRecoveryOpacityScale());
+            terrainDecalService_.SetShadowRecoveryUseStencil(settings.GetTerrainDecalShadowRecoveryUseStencil());
             if (terrainDecalService_.Init()) {
                 mpFrameWork->AddSystemService(&terrainDecalService_);
                 mpFrameWork->AddToTick(&terrainDecalService_);
@@ -213,6 +253,12 @@ public:
         return terrainDecalService_.HandleMessage(pMsg);
     }
 
+    bool PostAppInit() override {
+        // Every plugin is loaded by now, including any that pulled in an old imgui.dll.
+        WarnAboutLegacyImGuiDll("after plugins loaded");
+        return true;
+    }
+
     bool PostAppShutdown() override {
         LOG_INFO("RenderServicesDirector: PostAppShutdown");
 
@@ -220,6 +266,9 @@ public:
             mpFrameWork->RemoveFromTick(&imguiService_);
             mpFrameWork->RemoveSystemService(&imguiService_);
             mpFrameWork->RemoveSystemService(&cameraService_);
+            if (worldDrawServiceRegistered_) {
+                mpFrameWork->RemoveSystemService(&worldDrawService_);
+            }
             mpFrameWork->RemoveSystemService(&drawService_);
             if (terrainDecalServiceRegistered_) {
                 mpFrameWork->RemoveFromTick(&terrainDecalService_);
@@ -238,6 +287,8 @@ public:
 
         imguiService_.Shutdown();
         cameraService_.Shutdown();
+        worldDrawService_.Shutdown();
+        worldDrawServiceRegistered_ = false;
         drawService_.Shutdown();
         terrainDecalService_.Shutdown();
         terrainDecalServiceRegistered_ = false;
@@ -254,6 +305,7 @@ private:
         desc.visible = true;
         desc.on_render = &RenderServicesDirector::RenderDemoPanel_;
         desc.on_shutdown = &RenderServicesDirector::OnDemoPanelShutdown_;
+        demoPanelState_.service = &imguiService_;
         desc.data = &demoPanelState_;
 
         if (imguiService_.RegisterPanel(desc)) {
@@ -275,6 +327,13 @@ private:
             ImGui::Separator();
             ImGui::Text("Version: %s", SC4RS_PRODUCT_VERSION_STR);
             ImGui::TextUnformatted("ImGui is active and the service is running.");
+            SC4GraphicsDriverInfo driver{};
+            if (state->service && state->service->GetActiveDriverInfo(driver)) {
+                ImGui::Text("Graphics driver: %s", driver.name);
+                if (*driver.modulePath && ImGui::IsItemHovered()) {
+                    ImGui::SetTooltip("%s", driver.modulePath);
+                }
+            }
             ImGui::Spacing();
             ImGui::Checkbox("Show DearImGui demo window", &state->showDemoWindow);
         }
@@ -295,6 +354,8 @@ private:
     ImGuiService imguiService_;
     S3DCameraService cameraService_;
     DrawService drawService_;
+    WorldDrawService worldDrawService_;
+    bool worldDrawServiceRegistered_ = false;
     TerrainDecalService terrainDecalService_;
     cRZAutoRefCount<cIGZMessageServer2> messageServer_;
     bool terrainDecalServiceRegistered_ = false;

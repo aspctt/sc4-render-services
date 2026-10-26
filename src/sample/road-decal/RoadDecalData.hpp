@@ -4,6 +4,8 @@
 #include <string>
 #include <vector>
 
+class cIGZWorldDrawService;
+
 struct RoadDecalPoint
 {
     float x;
@@ -130,7 +132,11 @@ bool MoveSelectedRoadMarkupStroke(float deltaX, float deltaZ);
 bool RotateSelectedRoadMarkupStroke(float deltaRadians);
 
 void RebuildRoadDecalGeometry();
-void DrawRoadDecals();
+
+// Creates the world draw layers that show the markings. They are drawn by SC4RenderServices
+// every frame, so nothing has to be done per frame.
+bool InitRoadDecalRendering(cIGZWorldDrawService* worldDraw);
+void ShutdownRoadDecalRendering();
 
 // Shows the currently edited stroke (already-placed click points).
 void SetRoadDecalActiveStroke(const RoadMarkupStroke* stroke);

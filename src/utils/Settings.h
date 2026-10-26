@@ -23,6 +23,7 @@ public:
     [[nodiscard]] std::string GetTheme() const noexcept;
     [[nodiscard]] bool GetKeyboardNav() const noexcept;
     [[nodiscard]] float GetUIScale() const noexcept;
+    [[nodiscard]] std::string GetLayoutFile() const noexcept;
     [[nodiscard]] bool GetShowDemoPanel() const noexcept;
 
     // Service toggles
@@ -33,6 +34,7 @@ public:
     [[nodiscard]] bool GetEnableCustomTerrainDecalRenderer() const noexcept;
     [[nodiscard]] int GetTerrainDecalCustomDefaultDepthOffset() const noexcept;
     [[nodiscard]] float GetTerrainDecalShadowRecoveryOpacityScale() const noexcept;
+    [[nodiscard]] bool GetTerrainDecalShadowRecoveryUseStencil() const noexcept;
 
 private:
     spdlog::level::level_enum logLevel_;
@@ -43,6 +45,7 @@ private:
     std::string theme_;
     bool keyboardNav_;
     float uiScale_;
+    std::string layoutFile_;
     bool showDemoPanel_;
     bool enableImGuiService_;
     bool enableS3DCameraService_;
@@ -51,4 +54,5 @@ private:
     bool enableCustomTerrainDecalRenderer_;
     int terrainDecalCustomDefaultDepthOffset_;
     float terrainDecalShadowRecoveryOpacityScale_;
+    bool terrainDecalShadowRecoveryUseStencil_;
 };

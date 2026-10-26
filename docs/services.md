@@ -1,7 +1,7 @@
 # Service Reference
 
 This document covers the services registered by `SC4RenderServices.dll`:
-ImGui, S3D Camera, Draw, and Terrain Decal. All services are currently gated to
+ImGui, World Draw, S3D Camera, Draw, and Terrain Decal. All services are currently gated to
 SimCity 4 version `1.1.641`. If the version check fails, the service is not
 registered and `cIGZFrameWork::GetSystemService` will fail.
 
@@ -27,7 +27,11 @@ IDs and interface:
 - Interface header: `src/public/cIGZImGuiService.h`
 
 Threading and lifecycle:
-- Initialization happens after the DirectX 7 driver and the game window are available.
+- Initialization happens after the game creates its graphics driver and window. ImGui draws
+  through the driver's `cIGZGDriver` interface, so it works with the built-in DirectX driver,
+  SCD3D11 and scvk.
+- ImGui is the docking branch, built into `SC4RenderServices.dll`. Link it as described in the
+  README's Usage section.
 - Panel callbacks and `QueueRender` callbacks run on the render thread between `ImGui::NewFrame()` and `ImGui::EndFrame()`.
 - `GetContext()` returns the ImGui context pointer or `nullptr` when not ready.
 
@@ -47,19 +51,29 @@ Render queue:
 
 Texture API:
 - `CreateTexture` stores RGBA32 source pixels and returns an `ImGuiTextureHandle`.
-- `GetTextureID` returns a `IDirectDrawSurface7*` as `void*` or `nullptr` if the device is lost or the handle is stale.
+- `GetTextureID` returns the driver's texture name as an opaque `void*` for `ImGui::Image()`,
+  or `nullptr` if the device is lost or the handle is stale. The same handle can texture world
+  drawing through `SC4WorldStyle::texture`.
 - `ReleaseTexture` frees the underlying surface and removes the handle.
 - `IsTextureValid` returns false if the handle is stale or the device is lost.
 - Texture calls must be made on the render thread.
 - Device resets increment `GetDeviceGeneration`. Handles with older generations are invalid.
+  A reset happens when the driver loses its textures or the game creates a new driver object,
+  for example on a video mode change.
 
 Fonts:
 - `RegisterFont` requires ImGui to be initialized and a unique font ID.
 - Fonts are stored inside ImGui; the service only tracks IDs and pointers.
 - Register/unregister fonts on the render thread.
 
+Graphics driver:
+- `GetActiveDriverInfo` describes the active driver: its kind (`BuiltInDirectX`,
+  `BuiltInOpenGL`, `SCD3D11`, `Scvk` or `Unknown`), class ID, display name and module path.
+  It returns false until the game has created its driver.
+
 DX7 access:
-- `AcquireD3DInterfaces` returns AddRef'd `IDirect3DDevice7` and `IDirectDraw7` pointers.
+- `AcquireD3DInterfaces` returns AddRef'd `IDirect3DDevice7` and `IDirectDraw7` pointers. It
+  only succeeds with the built-in DirectX driver.
 - Always `Release()` both interfaces when done.
 - Prefer acquiring per operation instead of caching across frames.
 
@@ -93,6 +107,35 @@ Larger examples:
 - `../src/sample/ImGuiSampleDemoDirector.cpp`
 - `../src/sample/ImGuiTextureSample.cpp`
 - `../src/sample/OverlayManagerSampleDirector.cpp`
+
+## World Draw Service
+
+IDs and interface:
+- Service ID: `kWorldDrawServiceID` in `src/public/cIGZWorldDrawService.h`
+- Interface ID: `GZIID_cIGZWorldDrawService` in `src/public/cIGZWorldDrawService.h`
+- Interface header: `src/public/cIGZWorldDrawService.h`, helper `src/public/SC4WorldMeshBuilder.h`
+
+Capabilities:
+- Layers: triangles and lines kept inside the service and drawn at the end of a draw pass every
+  frame. Fill them when your data changes.
+- Draw callbacks: run at the end of a pass every frame, for geometry that changes every frame.
+- Styles cover blending, depth, depth bias, fog, culling and an optional texture from the ImGui
+  service. Lines are either a fixed pixel width facing the camera or a fixed width in metres
+  lying flat.
+- `PickTerrain` and `GetTerrainHeight` for placing geometry on the ground.
+
+Important behavior:
+- Registered together with the draw service, and only when `EnableDrawService=true`.
+- Draws through `cIGZGDriver`, so it works with every driver. The service restores the game's
+  render state after drawing.
+- The built-in DirectX driver drops any single draw over 2046 vertices. The service splits
+  larger draws for you.
+
+Guide: `world-drawing.md`
+
+Larger examples:
+- `../src/sample/WorldDrawSampleDirector.cpp`
+- `../src/sample/road-decal/RoadDecalSampleDirector.cpp`
 
 ## S3D Camera Service
 
@@ -173,9 +216,11 @@ if (drawService->RegisterDrawPassCallback(DrawServicePass::Dynamic,
 }
 ```
 
-Larger examples:
+For drawing your own geometry, prefer the World Draw Service: it sets and restores the render
+state for you and works with every graphics driver.
+
+Larger example:
 - `../src/sample/DrawServiceSampleDirector.cpp`
-- `../src/sample/road-decal/RoadDecalSampleDirector.cpp`
 
 ## Terrain Decal Service
 

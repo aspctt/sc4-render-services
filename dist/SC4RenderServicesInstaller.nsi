@@ -14,9 +14,6 @@
 !ifndef THIRD_PARTY_NOTICES_PATH
   !define THIRD_PARTY_NOTICES_PATH "THIRD_PARTY_NOTICES.txt"
 !endif
-!ifndef IMGUI_DLL_PATH
-  !define IMGUI_DLL_PATH "..\cmake-build-release-visual-studio\Release\imgui.dll"
-!endif
 !ifndef RENDER_SERVICES_DLL_PATH
   !define RENDER_SERVICES_DLL_PATH "..\cmake-build-release-visual-studio\Release\SC4RenderServices.dll"
 !endif
@@ -226,9 +223,9 @@ FunctionEnd
 Section "Install"
   SetShellVarContext current
 
-  CreateDirectory "$GameRoot\Apps"
-  SetOutPath "$GameRoot\Apps"
-  File "${IMGUI_DLL_PATH}"
+  ; Older versions installed imgui.dll in the game's Apps folder. It is now built into
+  ; SC4RenderServices.dll. The old file is left in place because plugins built for those
+  ; versions still need it to load. The uninstaller removes it.
 
   CreateDirectory "$SC4PluginsDir"
   SetOutPath "$SC4PluginsDir"
@@ -288,6 +285,7 @@ FunctionEnd
 Section "Uninstall"
   SetShellVarContext current
 
+  ; Left behind by versions that installed ImGui as a separate DLL.
   Delete "$GameRoot\Apps\imgui.dll"
   Delete "$SC4PluginsDir\SC4RenderServices.dll"
   Delete "$SupportDir\README.txt"

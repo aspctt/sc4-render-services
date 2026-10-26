@@ -4,19 +4,25 @@
 
 #include <algorithm>
 #include <atomic>
-#include <ddraw.h>
+#include <cstring>
+#include <d3d.h>
+#include <exception>
+#include <filesystem>
 #include <ranges>
-#include <winerror.h>
 
 #include "cIGZFrameWorkW32.h"
 #include "cIGZGraphicSystem2.h"
+#include "cISC43DRender.h"
+#include "cISC4View3DWin.h"
 #include "cRZAutoRefCount.h"
 #include "cRZCOMDllDirector.h"
 #include "DX7InterfaceHook.h"
 #include "GZServPtrs.h"
-#include "imgui_impl_dx7.h"
+#include "imgui_impl_gzgdriver.h"
 #include "imgui_impl_win32.h"
 #include "public/ImGuiServiceIds.h"
+#include "SC4UI.h"
+#include "utils/Fonts.h"
 #include "utils/Logger.h"
 #include "utils/VersionDetection.h"
 
@@ -24,17 +30,20 @@ namespace {
     std::atomic<ImGuiService*> g_instance{nullptr};
     std::atomic<DWORD> g_renderThreadId{0};
 
-    bool IsDeviceLostResult_(const HRESULT hr) {
-        switch (hr) {
-        case DDERR_SURFACELOST:
-        case DDERR_WRONGMODE:
-        case DDERR_NOEXCLUSIVEMODE:
-        case DDERR_EXCLUSIVEMODEALREADYSET:
-            return true;
-        default:
-            return FAILED(hr);
-        }
-    }
+    // The per-frame present at the end of cGZGraphicSystem::Draw (docs/generic-backend-re.md):
+    //   0098e765  8b 10              mov  edx, [eax]
+    //   0098e767  8b c8              mov  ecx, eax              <- ecx is the cIGZGDriver
+    //   0098e769  ff 92 ac 00 00 00  call [edx+0xac]            <- Flush(), patched to call FlushHook_ + nop
+    //   0098e76f  88 5e 26           mov  [esi+0x26], bl
+    constexpr uintptr_t kFlushCallGuardAddress = 0x0098E765;
+    constexpr uintptr_t kFlushCallSiteAddress = 0x0098E769;
+    constexpr uint8_t kFlushCallGuardBytes[] = {
+        0x8B, 0x10, 0x8B, 0xC8, 0xFF, 0x92, 0xAC, 0x00, 0x00, 0x00, 0x88, 0x5E, 0x26};
+    constexpr uint8_t kFlushCallOriginalBytes[] = {0xFF, 0x92, 0xAC, 0x00, 0x00, 0x00};
+
+    // SC4DrawContext thunks, as DrawService binds them.
+    constexpr uintptr_t kGetDrawContextAddress = 0x004E82A0;
+    constexpr uintptr_t kSetDefaultRenderStateUnilaterallyAddress = 0x007D5230;
 
     bool IsRenderThreadCallAllowed_(const char* operation, const bool allowBeforeRenderThreadKnown) {
         const DWORD threadId = GetCurrentThreadId();
@@ -65,10 +74,14 @@ ImGuiService::ImGuiService()
     : cRZBaseSystemService(kImGuiServiceID, 0)
       , gameWindow_(nullptr)
       , originalWndProc_(nullptr)
-      , lastKnownDevice_(nullptr)
-      , lastKnownDDraw_(nullptr)
       , initialized_(false)
       , imguiInitialized_(false)
+      , rendererDriver_(nullptr)
+      , identifiedDriver_(nullptr)
+      , rendererReady_(false)
+      , rendererFailed_(false)
+      , flushHookInstalled_(false)
+      , inFrame_(false)
       , hookInstalled_(false)
       , warnedNoDriver_(false)
       , warnedMissingWindow_(false)
@@ -165,28 +178,26 @@ bool ImGuiService::Shutdown() {
         fontAtlasRebuildPending_ = false;
     }
 
-    // Clean up all textures before shutting down ImGui
+    // Forget textures without calling the driver, which may already be shut down.
     {
         std::lock_guard textureLock(texturesMutex_);
-        for (auto& texture : textures_ | std::views::values) {
-            if (texture.surface) {
-                texture.surface->Release();
-                texture.surface = nullptr;
-            }
-        }
         textures_.clear();
         pendingTextureReleaseIds_.clear();
     }
 
+    RemoveFlushHook_();
     RemoveWndProcHook_();
-    DX7InterfaceHook::SetFrameCallback(nullptr);
-    DX7InterfaceHook::ShutdownImGui();
+    if (rendererReady_) {
+        ImGui_ImplGZGDriver_Shutdown();
+    }
+    DestroyContext_();
+    DX7InterfaceHook::ReleaseInterface();
 
+    rendererReady_ = false;
+    rendererDriver_ = nullptr;
     imguiInitialized_ = false;
     hookInstalled_ = false;
     deviceLost_ = false;
-    lastKnownDevice_ = nullptr;
-    lastKnownDDraw_ = nullptr;
     g_renderThreadId.store(0, std::memory_order_release);
     deviceGeneration_.fetch_add(1, std::memory_order_release);
     SetServiceRunning(false);
@@ -198,6 +209,7 @@ bool ImGuiService::OnTick(uint32_t) {
         return true;
     }
 
+    CaptureD3DX_();
     if (EnsureInitialized_()) {
         InitializePanels_();
     }
@@ -339,109 +351,191 @@ bool ImGuiService::AcquireD3DInterfaces(IDirect3DDevice7** outD3D, IDirectDraw7*
 }
 
 bool ImGuiService::IsDeviceReady() const {
-    if (!imguiInitialized_) {
-        return false;
-    }
-    auto* d3dx = DX7InterfaceHook::GetD3DXInterface();
-    return d3dx && d3dx->GetD3DDevice() && d3dx->GetDD();
+    return imguiInitialized_ && rendererReady_ && !deviceLost_;
 }
 
 uint32_t ImGuiService::GetDeviceGeneration() const {
     return deviceGeneration_.load(std::memory_order_acquire);
 }
 
-void ImGuiService::RenderFrameThunk_(IDirect3DDevice7* device) {
-    auto* instance = g_instance.load(std::memory_order_acquire);
-    if (instance) {
-        instance->RenderFrame_(device);
+void __fastcall ImGuiService::FlushHook_(cIGZGDriver* driver) {
+    if (auto* instance = g_instance.load(std::memory_order_acquire)) {
+        instance->RenderOverlay_(driver);
+    }
+    driver->Flush();
+}
+
+void ImGuiService::RenderOverlay_(cIGZGDriver* driver) {
+    if (!initialized_ || !imguiInitialized_ || !ImGui::GetCurrentContext()) {
+        return;
+    }
+
+    if (driver != rendererDriver_) {
+        if (!rendererReady_) {
+            rendererReady_ = ImGui_ImplGZGDriver_Init(driver);
+            if (!rendererReady_) {
+                if (!rendererFailed_) {
+                    LOG_ERROR("ImGuiService: ImGui cannot draw with this graphics driver, so ImGui windows will not be shown");
+                    rendererFailed_ = true;
+                }
+                return;
+            }
+            LOG_INFO("ImGuiService: ImGui is ready and draws through {}", IdentifyDriver_(driver).name);
+        }
+        else {
+            // A new driver object (video mode change): its textures are not the old ones.
+            IdentifyDriver_(driver);
+            LOG_INFO("ImGuiService: the game switched to a new graphics driver object, recreating ImGui textures");
+            OnDeviceLost_();
+            OnDeviceRestored_();
+        }
+        rendererDriver_ = driver;
+    }
+
+    // Panel code runs inside, so nothing may unwind into the game's frame.
+    try {
+        inFrame_ = true;
+        ImGui_ImplWin32_NewFrame();
+        ImGui_ImplGZGDriver_NewFrame(driver);
+        if (BuildFrame_()) {
+            ImGui_ImplGZGDriver_RenderDrawData(ImGui::GetDrawData());
+        }
+        inFrame_ = false;
+        ResyncGameStateCache_();
+    }
+    catch (const std::exception& e) {
+        inFrame_ = false;
+        static bool s_logged = false;
+        if (!s_logged) {
+            LOG_ERROR("ImGuiService: exception while drawing ImGui: {}", e.what());
+            s_logged = true;
+        }
+    }
+
+    // How often the game presents decides how often ImGui updates. Report it once.
+    static ULONGLONG s_firstFrameTick = 0;
+    static uint32_t s_frames = 0;
+    if (s_firstFrameTick != ~0ull) {
+        const ULONGLONG now = GetTickCount64();
+        if (s_firstFrameTick == 0) {
+            s_firstFrameTick = now;
+        }
+        ++s_frames;
+        if (now - s_firstFrameTick >= 10000) {
+            LOG_INFO("ImGuiService: {} frames presented in the first 10 s", s_frames);
+            s_firstFrameTick = ~0ull;
+        }
     }
 }
 
-void ImGuiService::RenderFrame_(IDirect3DDevice7* device) {
-    static auto loggedFirstRender = false;
+void ImGuiService::ResyncGameStateCache_() {
+    // SC4DrawContext caches render state above the driver, so after ImGui changed it behind the
+    // cache's back, make the cache issue everything again. Only city view has one.
+    const auto view3DWin = SC4UI::GetView3DWin();
+    if (!view3DWin) {
+        return;
+    }
+    cISC43DRender* renderer = view3DWin->GetRenderer();
+    if (!renderer) {
+        return;
+    }
+    const auto getDrawContext = reinterpret_cast<void* (__thiscall*)(void*)>(kGetDrawContextAddress);
+    const auto resetState = reinterpret_cast<void (__thiscall*)(void*)>(kSetDefaultRenderStateUnilaterallyAddress);
+    if (void* drawContext = getDrawContext(renderer)) {
+        resetState(drawContext);
+    }
+}
+
+bool ImGuiService::InstallFlushHook_() {
+    if (flushHookInstalled_) {
+        return true;
+    }
+
+    auto* guard = reinterpret_cast<uint8_t*>(kFlushCallGuardAddress);
+    if (std::memcmp(guard, kFlushCallGuardBytes, sizeof(kFlushCallGuardBytes)) != 0) {
+        LOG_ERROR("ImGuiService: cannot attach to the game's frame drawing because the code at 0x{:08X} is not what "
+                  "SC4RenderServices expects. Another plugin has probably changed it. ImGui windows will not be shown.",
+                  static_cast<uint32_t>(kFlushCallGuardAddress));
+        return false;
+    }
+
+    // call rel32 to FlushHook_, then a nop over the sixth byte of the original indirect call.
+    uint8_t patch[sizeof(kFlushCallOriginalBytes)] = {0xE8, 0, 0, 0, 0, 0x90};
+    const auto rel = static_cast<int32_t>(reinterpret_cast<uintptr_t>(&ImGuiService::FlushHook_) -
+                                          (kFlushCallSiteAddress + 5));
+    std::memcpy(patch + 1, &rel, sizeof(rel));
+
+    auto* site = reinterpret_cast<uint8_t*>(kFlushCallSiteAddress);
+    DWORD oldProtect = 0;
+    if (!VirtualProtect(site, sizeof(patch), PAGE_EXECUTE_READWRITE, &oldProtect)) {
+        LOG_ERROR("ImGuiService: Windows did not allow attaching to the game's frame drawing (VirtualProtect failed). "
+                  "ImGui windows will not be shown.");
+        return false;
+    }
+    std::memcpy(site, patch, sizeof(patch));
+    FlushInstructionCache(GetCurrentProcess(), site, sizeof(patch));
+    VirtualProtect(site, sizeof(patch), oldProtect, &oldProtect);
+
+    flushHookInstalled_ = true;
+    LOG_INFO("ImGuiService: attached to the game's frame drawing at 0x{:08X}", static_cast<uint32_t>(kFlushCallSiteAddress));
+    return true;
+}
+
+void ImGuiService::RemoveFlushHook_() {
+    if (!flushHookInstalled_) {
+        return;
+    }
+
+    auto* site = reinterpret_cast<uint8_t*>(kFlushCallSiteAddress);
+    if (site[0] != 0xE8) {
+        LOG_WARN("ImGuiService: another plugin changed the game's frame drawing after SC4RenderServices attached to it, "
+                 "so it is left as it is");
+        flushHookInstalled_ = false;
+        return;
+    }
+
+    DWORD oldProtect = 0;
+    if (!VirtualProtect(site, sizeof(kFlushCallOriginalBytes), PAGE_EXECUTE_READWRITE, &oldProtect)) {
+        LOG_ERROR("ImGuiService: could not detach from the game's frame drawing (VirtualProtect failed)");
+        return;
+    }
+    std::memcpy(site, kFlushCallOriginalBytes, sizeof(kFlushCallOriginalBytes));
+    FlushInstructionCache(GetCurrentProcess(), site, sizeof(kFlushCallOriginalBytes));
+    VirtualProtect(site, sizeof(kFlushCallOriginalBytes), oldProtect, &oldProtect);
+    flushHookInstalled_ = false;
+}
+
+bool ImGuiService::BuildFrame_() {
+    static auto loggedFirstFrame = false;
     const DWORD threadId = GetCurrentThreadId();
     const DWORD prevThreadId = g_renderThreadId.load(std::memory_order_acquire);
     if (prevThreadId == 0) {
         g_renderThreadId.store(threadId, std::memory_order_release);
-        LOG_DEBUG("ImGuiService::RenderFrame_: render thread id set to {}", threadId);
+        LOG_DEBUG("ImGuiService::BuildFrame_: render thread id set to {}", threadId);
     }
     else if (prevThreadId != threadId) {
-        LOG_WARN("ImGuiService::RenderFrame_: render thread id changed ({} -> {})",
+        LOG_WARN("ImGuiService::BuildFrame_: render thread id changed ({} -> {})",
                  prevThreadId, threadId);
         g_renderThreadId.store(threadId, std::memory_order_release);
     }
-    if (!imguiInitialized_) {
-        return;
+    if (!imguiInitialized_ || !ImGui::GetCurrentContext()) {
+        return false;
     }
 
     {
         std::lock_guard lock(panelsMutex_);
         if (!initialized_) {
-            return;
+            return false;
         }
-    }
-
-    auto* d3dx = DX7InterfaceHook::GetD3DXInterface();
-    if (!d3dx || device != d3dx->GetD3DDevice()) {
-        return;
-    }
-    auto* dd = d3dx->GetDD();
-    if (dd) {
-        HRESULT hr = dd->TestCooperativeLevel();
-        if (IsDeviceLostResult_(hr)) {
-            if (!deviceLost_) {
-                OnDeviceLost_();
-            }
-            return;
-        }
-    } else {
-        return;
-    }
-
-    const bool interfacesChanged = lastKnownDevice_ != device || lastKnownDDraw_ != dd;
-    const bool hadKnownInterfaces = lastKnownDevice_ != nullptr || lastKnownDDraw_ != nullptr;
-    if (interfacesChanged) {
-        if (hadKnownInterfaces) {
-            LOG_WARN("ImGuiService::RenderFrame_: DX7 interfaces changed (device {} -> {}, dd {} -> {})",
-                     static_cast<void*>(lastKnownDevice_),
-                     static_cast<void*>(device),
-                     static_cast<void*>(lastKnownDDraw_),
-                     static_cast<void*>(dd));
-            if (!deviceLost_) {
-                OnDeviceLost_();
-            }
-        }
-
-        lastKnownDevice_ = device;
-        lastKnownDDraw_ = dd;
-
-        if (!ImGui_ImplDX7_UpdateDevice(device, dd)) {
-            LOG_ERROR("ImGuiService::RenderFrame_: failed to update ImGui DX7 backend interfaces");
-            return;
-        }
-
-        DX7InterfaceHook::InstallSceneHooks();
-    }
-
-    if (deviceLost_) {
-        if (!OnDeviceRestored_()) {
-            return;
-        }
-    }
-
-    if (!ImGui::GetCurrentContext()) {
-        return;
     }
 
     // Delay texture destruction until the next frame so draw commands emitted
-    // earlier in the frame never reference a released DDraw surface.
+    // earlier in the frame never reference a released driver texture.
     ProcessPendingTextureReleases_();
 
     InitializePanels_();
     ProcessPendingFontRegistrations_();
 
-    ImGui_ImplWin32_NewFrame();
-    ImGui_ImplDX7_NewFrame();
     ImGui::NewFrame();
 
     std::vector<ImGuiPanelDesc> panelsToUpdate;
@@ -498,30 +592,18 @@ void ImGuiService::RenderFrame_(IDirect3DDevice7* device) {
         }
     }
 
-    ImGui::EndFrame();
     ImGui::Render();
 
-    const HRESULT preRenderHr = dd->TestCooperativeLevel();
-    if (IsDeviceLostResult_(preRenderHr)) {
-        if (!deviceLost_) {
-            OnDeviceLost_();
-        }
-        return;
+    if (!loggedFirstFrame) {
+        LOG_INFO("ImGuiService: built first frame with {} panel(s)", panelsToRender.size());
+        loggedFirstFrame = true;
     }
-
-    ImGui_ImplDX7_RenderDrawData(ImGui::GetDrawData());
-
-    if (!loggedFirstRender) {
-        LOG_INFO("ImGuiService: rendered first frame with {} panel(s)", panels_.size());
-        loggedFirstRender = true;
-    }
+    return true;
 }
 
 bool ImGuiService::EnsureInitialized_() {
     if (imguiInitialized_) {
-        cIGZGraphicSystem2Ptr pGS2;
-        cIGZGDriver* const pDriver = pGS2 ? pGS2->GetGDriver() : nullptr;
-        return pDriver && DX7InterfaceHook::CaptureInterface(pDriver) && IsDeviceReady();
+        return true;
     }
 
     cIGZGraphicSystem2Ptr pGS2;
@@ -529,33 +611,11 @@ bool ImGuiService::EnsureInitialized_() {
         return false;
     }
 
-    cIGZGDriver* pDriver = pGS2->GetGDriver();
-    if (!pDriver) {
+    if (!pGS2->GetGDriver()) {
         if (!warnedNoDriver_) {
             LOG_WARN("ImGuiService: graphics driver not available yet");
             warnedNoDriver_ = true;
         }
-        return false;
-    }
-
-    if (pDriver->GetGZCLSID() != kSCGDriverDirectX) {
-        if (!warnedNoDriver_) {
-            LOG_WARN("ImGuiService: not a DirectX driver, skipping initialization");
-            warnedNoDriver_ = true;
-        }
-        return false;
-    }
-
-    if (!DX7InterfaceHook::CaptureInterface(pDriver)) {
-        LOG_ERROR("ImGuiService: failed to capture D3DX interface");
-        return false;
-    }
-    auto* d3dx = DX7InterfaceHook::GetD3DXInterface();
-    if (!d3dx || !d3dx->GetD3DDevice() || !d3dx->GetDD()) {
-        LOG_WARN("ImGuiService: D3DX interface not ready yet (d3dx={}, d3d={}, dd={})",
-                 static_cast<void*>(d3dx),
-                 static_cast<void*>(d3dx ? d3dx->GetD3DDevice() : nullptr),
-                 static_cast<void*>(d3dx ? d3dx->GetDD() : nullptr));
         return false;
     }
 
@@ -576,8 +636,8 @@ bool ImGuiService::EnsureInitialized_() {
         return false;
     }
 
-    if (!DX7InterfaceHook::InitializeImGui(hwnd, initSettings_)) {
-        LOG_ERROR("ImGuiService: failed to initialize ImGui backends");
+    if (!CreateContext_(hwnd)) {
+        LOG_ERROR("ImGuiService: failed to create the ImGui context");
         return false;
     }
 
@@ -589,9 +649,144 @@ bool ImGuiService::EnsureInitialized_() {
     if (!InstallWndProcHook_(hwnd)) {
         LOG_WARN("ImGuiService: failed to install WndProc hook");
     }
-    DX7InterfaceHook::SetFrameCallback(&ImGuiService::RenderFrameThunk_);
-    DX7InterfaceHook::InstallSceneHooks();
-    LOG_INFO("ImGuiService: ImGui initialized and scene hooks installed");
+    if (!InstallFlushHook_()) {
+        LOG_ERROR("ImGuiService: ImGui is set up, but it could not attach to the game's frame drawing, so ImGui "
+                  "windows will not be shown");
+        return true;
+    }
+    LOG_INFO("ImGuiService: ImGui context created");
+    return true;
+}
+
+bool ImGuiService::CreateContext_(const HWND hwnd) {
+    if (ImGui::GetCurrentContext()) {
+        DestroyContext_();
+        LOG_WARN("ImGuiService::CreateContext_: destroyed stale ImGui state before reinitializing");
+    }
+
+    IMGUI_CHECKVERSION();
+    ImGui::CreateContext();
+    ImGuiIO& io = ImGui::GetIO();
+    const ImGuiInitSettings& settings = initSettings_;
+
+    if (settings.keyboardNav) {
+        io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
+    }
+    io.ConfigFlags |= ImGuiConfigFlags_DockingEnable;
+
+    // ImGui keeps the pointer, so the path must outlive the context. Without a path it
+    // would default to imgui.ini in the game's working directory, so disable it instead.
+    static std::string s_layoutFile;
+    s_layoutFile = settings.layoutFile;
+    io.IniFilename = s_layoutFile.empty() ? nullptr : s_layoutFile.c_str();
+
+    // Apply theme
+    if (settings.theme == "light") {
+        ImGui::StyleColorsLight();
+    } else if (settings.theme == "classic") {
+        ImGui::StyleColorsClassic();
+    } else {
+        ImGui::StyleColorsDark();
+    }
+
+    // Apply UI scale
+    if (settings.uiScale != 1.0f) {
+        ImGui::GetStyle().ScaleAllSizes(settings.uiScale);
+    }
+
+    // Configure font rendering
+    ImFontConfig fontConfig;
+    fontConfig.OversampleH = static_cast<ImS8>(settings.fontOversample);
+    fontConfig.OversampleV = static_cast<ImS8>(settings.fontOversample);
+    fontConfig.PixelSnapH = true;
+    fontConfig.GlyphExtraAdvanceX = 0.0f;
+
+    const float scaledFontSize = settings.fontSize * settings.uiScale;
+
+    // Load font: custom TTF file or built-in ProggyVector
+    ImFont* font = nullptr;
+    if (!settings.fontFile.empty()) {
+        const std::filesystem::path fontPath(settings.fontFile);
+        if (std::filesystem::exists(fontPath)) {
+            font = io.Fonts->AddFontFromFileTTF(fontPath.string().c_str(), scaledFontSize, &fontConfig);
+            if (font) {
+                LOG_INFO("ImGuiService::CreateContext_: loaded custom font from {}", fontPath.string());
+            } else {
+                LOG_WARN("ImGuiService::CreateContext_: failed to load font from {}, falling back to built-in", fontPath.string());
+            }
+        } else {
+            LOG_WARN("ImGuiService::CreateContext_: font file not found: {}, falling back to built-in", fontPath.string());
+        }
+    }
+
+    if (!font) {
+        font = io.Fonts->AddFontFromMemoryCompressedTTF(
+            ProggyVector_compressed_data, ProggyVector_compressed_size, scaledFontSize, &fontConfig);
+        if (font) {
+            LOG_INFO("ImGuiService::CreateContext_: loaded built-in font (size={})", scaledFontSize);
+        } else {
+            LOG_WARN("ImGuiService::CreateContext_: failed to load built-in font, will use the ImGui default");
+        }
+    }
+
+    if (font) {
+        io.FontDefault = font;
+    }
+
+    if (!ImGui_ImplWin32_Init(hwnd)) {
+        LOG_ERROR("ImGuiService::CreateContext_: ImGui_ImplWin32_Init failed");
+        ImGui::DestroyContext();
+        return false;
+    }
+
+    return true;
+}
+
+void ImGuiService::DestroyContext_() {
+    if (!ImGui::GetCurrentContext()) {
+        return;
+    }
+    if (ImGui::GetIO().BackendPlatformUserData) {
+        ImGui_ImplWin32_Shutdown();
+    }
+    ImGui::DestroyContext();
+}
+
+void ImGuiService::CaptureD3DX_() {
+    // DX7 consumers (terrain decals, AcquireD3DInterfaces) read the native driver's D3DX
+    // object. ImGui itself does not need it.
+    // Only the built-in driver has that object. SCD3D11 reports the same class ID, so the class
+    // ID alone would read an unrelated field of its driver.
+    cIGZGraphicSystem2Ptr pGS2;
+    cIGZGDriver* const pDriver = pGS2 ? pGS2->GetGDriver() : nullptr;
+    if (pDriver && IdentifyDriver_(pDriver).kind == SC4GraphicsDriverKind::BuiltInDirectX) {
+        DX7InterfaceHook::CaptureInterface(pDriver);
+    }
+}
+
+const IdentifiedGraphicsDriver& ImGuiService::IdentifyDriver_(cIGZGDriver* driver) const {
+    if (driver != identifiedDriver_) {
+        identifiedDriver_ = driver;
+        driverInfo_ = IdentifyGraphicsDriver(driver);
+        if (driver) {
+            LOG_INFO("ImGuiService: the game is drawing with {} (class ID 0x{:08X}, {})", driverInfo_.name,
+                     driverInfo_.classId, driverInfo_.modulePath.empty() ? "module unknown" : driverInfo_.modulePath);
+        }
+    }
+    return driverInfo_;
+}
+
+bool ImGuiService::GetActiveDriverInfo(SC4GraphicsDriverInfo& out) const {
+    cIGZGraphicSystem2Ptr pGS2;
+    cIGZGDriver* const pDriver = pGS2 ? pGS2->GetGDriver() : nullptr;
+    if (!pDriver) {
+        return false;
+    }
+    const IdentifiedGraphicsDriver& info = IdentifyDriver_(pDriver);
+    out.kind = info.kind;
+    out.classId = info.classId;
+    out.name = info.name;
+    out.modulePath = info.modulePath.c_str();
     return true;
 }
 
@@ -716,21 +911,14 @@ ImGuiTextureHandle ImGuiService::CreateTexture(const ImGuiTextureDesc& desc) {
         return ImGuiTextureHandle{0, 0};
     }
 
-    if (!IsDeviceReady()) {
-        LOG_WARN("ImGuiService::CreateTexture: device not ready, texture will be created on-demand");
-    }
-
     uint32_t currentGen = deviceGeneration_.load(std::memory_order_acquire);
 
-    // Create managed texture entry
+    // Create managed texture entry. desc.useSystemMemory was a DirectDraw placement hint
+    // and has no meaning for driver textures.
     ManagedTexture tex;
     tex.width = desc.width;
     tex.height = desc.height;
     tex.creationGeneration = currentGen;
-    tex.useSystemMemory = desc.useSystemMemory;
-    tex.surface = nullptr;
-    tex.needsRecreation = false;
-    tex.pendingDestroy = false;
 
     // Store source pixel data for recreation after device loss
     const size_t dataSize = pixelCount * 4; // RGBA32
@@ -746,21 +934,9 @@ ImGuiTextureHandle ImGuiService::CreateTexture(const ImGuiTextureDesc& desc) {
         }
     }
 
-    // Only the render thread may talk to D3D. Before the render thread is known,
-    // create a deferred entry and let GetTextureID() realize it later.
-    if (!renderThreadKnown) {
-        tex.needsRecreation = true;
-        LOG_WARN("ImGuiService::CreateTexture: render thread not established yet, deferring surface creation (id={})", tex.id);
-    }
-    else if (IsDeviceReady() && !deviceLost_) {
-        if (!CreateSurfaceForTexture_(tex)) {
-            LOG_WARN("ImGuiService::CreateTexture: surface creation failed, will retry later (id={})", tex.id);
-            tex.needsRecreation = true;
-        }
-    }
-    else {
-        tex.needsRecreation = true;
-    }
+    // The driver texture is made on first use by GetTextureID(), inside the ImGui frame: only
+    // there are driver calls safe from disturbing the game's own texture bindings.
+    tex.needsRecreation = true;
 
     const uint32_t textureId = tex.id;
 
@@ -805,29 +981,20 @@ void* ImGuiService::GetTextureID(const ImGuiTextureHandle handle) {
         return nullptr;
     }
 
-    // Recreate surface if needed
-    if (tex.needsRecreation || !tex.surface) {
-        if (!CreateSurfaceForTexture_(tex)) {
-            LOG_WARN("ImGuiService::GetTextureID: failed to recreate surface (id={})", tex.id);
+    // A driver may drop textures when the device is lost. Recreate them from the kept pixels.
+    if (tex.driverTexture != 0 && inFrame_ && !ImGui_ImplGZGDriver_IsTextureAlive(tex.driverTexture)) {
+        tex.driverTexture = 0;
+        tex.needsRecreation = true;
+    }
+
+    // Recreate the driver texture if needed
+    if (tex.needsRecreation || tex.driverTexture == 0) {
+        if (!CreateDriverTexture_(tex)) {
             return nullptr;
         }
     }
 
-    // Validate surface is not lost
-    // IsLost() returns DD_OK (S_OK) if surface is valid, DDERR_SURFACELOST if lost; other return values
-    // (including unexpected error codes) are not explicitly handled here and are treated as a valid surface.
-    if (tex.surface) {
-        HRESULT hr = tex.surface->IsLost();
-        if (hr == DDERR_SURFACELOST) {
-            LOG_WARN("ImGuiService::GetTextureID: surface is lost (id={})", tex.id);
-            tex.surface->Release();
-            tex.surface = nullptr;
-            tex.needsRecreation = true;
-            return nullptr;
-        }
-    }
-
-    return static_cast<void*>(tex.surface);
+    return reinterpret_cast<void*>(static_cast<uintptr_t>(tex.driverTexture));
 }
 
 void ImGuiService::ReleaseTexture(ImGuiTextureHandle handle) {
@@ -886,10 +1053,7 @@ void ImGuiService::ProcessPendingTextureReleases_() {
             continue;
         }
 
-        if (it->second.surface) {
-            it->second.surface->Release();
-            it->second.surface = nullptr;
-        }
+        ReleaseDriverTexture_(it->second);
         textures_.erase(it);
         LOG_INFO("ImGuiService::ProcessPendingTextureReleases_: released texture (id={})", textureId);
     }
@@ -1093,143 +1257,38 @@ void ImGuiService::ProcessPendingFontRegistrations_() {
         }
     }
 
-    if (rebuildRequested && !RebuildFontAtlas_()) {
-        std::lock_guard lock(fontsMutex_);
-        fontAtlasRebuildPending_ = true;
-        LOG_ERROR("ImGuiService::ProcessPendingFontRegistrations_: failed to rebuild font atlas texture");
-        return;
-    }
-
+    // No explicit atlas rebuild: with ImGuiBackendFlags_RendererHasTextures the renderer
+    // backend uploads atlas changes through ImTextureData requests on the next frame.
     for (const auto& [id, _] : appliedFonts) {
         LOG_INFO("ImGuiService::RegisterFont: registered font ID {}", id);
     }
 }
 
-bool ImGuiService::RebuildFontAtlas_() {
-    if (!imguiInitialized_ || !ImGui::GetCurrentContext()) {
+bool ImGuiService::CreateDriverTexture_(ManagedTexture& tex) {
+    if (!inFrame_ || !rendererReady_) {
         return false;
     }
 
-    ImGui_ImplDX7_InvalidateDeviceObjects();
-    if (!ImGui_ImplDX7_CreateDeviceObjects()) {
+    const uint32_t texture = ImGui_ImplGZGDriver_CreateTexture(
+        tex.sourceData.data(), static_cast<int>(tex.width), static_cast<int>(tex.height));
+    if (texture == 0) {
+        LOG_WARN("ImGuiService::CreateDriverTexture_: driver texture creation failed (id={}, {}x{})",
+                 tex.id, tex.width, tex.height);
         return false;
     }
 
-    LOG_INFO("ImGuiService::RebuildFontAtlas_: rebuilt font atlas texture");
+    tex.driverTexture = texture;
+    tex.needsRecreation = false;
+    tex.creationGeneration = deviceGeneration_.load(std::memory_order_acquire);
     return true;
 }
 
-bool ImGuiService::CreateSurfaceForTexture_(ManagedTexture& tex) {
-    if (!IsDeviceReady()) {
-        return false;
+void ImGuiService::ReleaseDriverTexture_(ManagedTexture& tex) {
+    // Outside the frame the texture is only forgotten: the driver may be gone or replaced.
+    if (tex.driverTexture != 0 && inFrame_ && rendererReady_) {
+        ImGui_ImplGZGDriver_DestroyTexture(tex.driverTexture);
     }
-
-    // Acquire D3D interfaces with RAII cleanup
-    IDirect3DDevice7* d3d = nullptr;
-    IDirectDraw7* dd = nullptr;
-    if (!AcquireD3DInterfaces(&d3d, &dd)) {
-        LOG_ERROR("ImGuiService::CreateSurfaceForTexture_: failed to acquire D3D interfaces");
-        return false;
-    }
-
-    // RAII cleanup for interfaces
-    struct D3DCleanup {
-        IDirect3DDevice7* d3d;
-        IDirectDraw7* dd;
-
-        ~D3DCleanup() {
-            if (d3d) d3d->Release();
-            if (dd) dd->Release();
-        }
-    } cleanup{d3d, dd};
-
-    // Set up surface descriptor
-    DDSURFACEDESC2 ddsd{};
-    ddsd.dwSize = sizeof(ddsd);
-    ddsd.dwFlags = DDSD_CAPS | DDSD_HEIGHT | DDSD_WIDTH | DDSD_PIXELFORMAT;
-    ddsd.dwWidth = tex.width;
-    ddsd.dwHeight = tex.height;
-    ddsd.ddsCaps.dwCaps = DDSCAPS_TEXTURE;
-
-    // Use video memory or system memory based on flag
-    if (tex.useSystemMemory) {
-        ddsd.ddsCaps.dwCaps |= DDSCAPS_SYSTEMMEMORY;
-    }
-    else {
-        ddsd.ddsCaps.dwCaps |= DDSCAPS_VIDEOMEMORY;
-    }
-
-    // 32-bit ARGB pixel format
-    ddsd.ddpfPixelFormat.dwSize = sizeof(DDPIXELFORMAT);
-    ddsd.ddpfPixelFormat.dwFlags = DDPF_RGB | DDPF_ALPHAPIXELS;
-    ddsd.ddpfPixelFormat.dwRGBBitCount = 32;
-    ddsd.ddpfPixelFormat.dwRBitMask = 0x00FF0000;
-    ddsd.ddpfPixelFormat.dwGBitMask = 0x0000FF00;
-    ddsd.ddpfPixelFormat.dwBBitMask = 0x000000FF;
-    ddsd.ddpfPixelFormat.dwRGBAlphaBitMask = 0xFF000000;
-
-    IDirectDrawSurface7* surface = nullptr;
-    HRESULT hr = dd->CreateSurface(&ddsd, &surface, nullptr);
-
-    // Fallback to system memory if video memory is exhausted
-    if (hr == DDERR_OUTOFVIDEOMEMORY && !tex.useSystemMemory) {
-        LOG_WARN(
-            "ImGuiService::CreateSurfaceForTexture_: video memory exhausted, falling back to system memory (id={})",
-            tex.id);
-        ddsd.ddsCaps.dwCaps &= ~DDSCAPS_VIDEOMEMORY;
-        ddsd.ddsCaps.dwCaps |= DDSCAPS_SYSTEMMEMORY;
-        hr = dd->CreateSurface(&ddsd, &surface, nullptr);
-        if (SUCCEEDED(hr)) {
-            tex.useSystemMemory = true;
-        }
-    }
-
-    if (FAILED(hr) || !surface) {
-        LOG_ERROR("ImGuiService::CreateSurfaceForTexture_: CreateSurface failed (hr=0x{:08X}, id={})", hr, tex.id);
-        return false;
-    }
-
-    // Lock surface for writing
-    DDSURFACEDESC2 lockDesc{};
-    lockDesc.dwSize = sizeof(lockDesc);
-    hr = surface->Lock(nullptr, &lockDesc, DDLOCK_WRITEONLY, nullptr);
-    if (hr == DDERR_SURFACELOST) {
-        LOG_WARN("ImGuiService::CreateSurfaceForTexture_: Surface lost during lock (id={})", tex.id);
-        surface->Release();
-        tex.needsRecreation = true;
-        return false;
-    }
-    if (FAILED(hr)) {
-        LOG_ERROR("ImGuiService::CreateSurfaceForTexture_: Lock failed (hr=0x{:08X}, id={})", hr, tex.id);
-        surface->Release();
-        return false;
-    }
-
-    // Copy pixel data row-by-row (respecting lPitch)
-    const auto* srcPixels = reinterpret_cast<const uint8_t*>(tex.sourceData.data());
-    auto* dstPixels = static_cast<uint8_t*>(lockDesc.lpSurface);
-    const uint32_t srcPitch = tex.width * 4; // RGBA32
-    const uint32_t dstPitch = lockDesc.lPitch;
-
-    for (uint32_t y = 0; y < tex.height; ++y) {
-        std::memcpy(dstPixels + y * dstPitch, srcPixels + y * srcPitch, srcPitch);
-    }
-
-    surface->Unlock(nullptr);
-
-    // Clean up old surface if it exists
-    if (tex.surface) {
-        tex.surface->Release();
-    }
-
-    tex.surface = surface;
-    tex.needsRecreation = false;
-    uint32_t currentGen = deviceGeneration_.load(std::memory_order_acquire);
-    tex.creationGeneration = currentGen;
-
-    LOG_INFO("ImGuiService::CreateSurfaceForTexture_: surface created successfully (id={}, gen={})",
-             tex.id, currentGen);
-    return true;
+    tex.driverTexture = 0;
 }
 
 void ImGuiService::OnDeviceLost_() {
@@ -1250,19 +1309,12 @@ void ImGuiService::OnDeviceLost_() {
         desc.on_device_lost(desc.data);
     }
 
-    ImGui_ImplDX7_InvalidateDeviceObjects();
-
     InvalidateAllTextures_();
 
     LOG_WARN("ImGuiService::OnDeviceLost_: device lost, notified panels and invalidated textures");
 }
 
-bool ImGuiService::OnDeviceRestored_() {
-    if (!ImGui_ImplDX7_CreateDeviceObjects()) {
-        LOG_WARN("ImGuiService::OnDeviceRestored_: failed to recreate backend device objects");
-        return false;
-    }
-
+void ImGuiService::OnDeviceRestored_() {
     // Increment device generation to invalidate old handles
     uint32_t newGen = deviceGeneration_.fetch_add(1, std::memory_order_release) + 1;
     deviceLost_ = false;
@@ -1283,16 +1335,12 @@ bool ImGuiService::OnDeviceRestored_() {
     }
 
     LOG_INFO("ImGuiService::OnDeviceRestored_: device restored (new gen={}) and notified panels", newGen);
-    return true;
 }
 
 void ImGuiService::InvalidateAllTextures_() {
     std::lock_guard lock(texturesMutex_);
     for (auto& tex : textures_ | std::views::values) {
-        if (tex.surface) {
-            tex.surface->Release();
-            tex.surface = nullptr;
-        }
+        ReleaseDriverTexture_(tex);
         tex.needsRecreation = true;
     }
 }

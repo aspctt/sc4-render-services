@@ -50,6 +50,11 @@ namespace TerrainDecal
         cISTETerrain* terrain = nullptr;
         cISTETerrainView* terrainView = nullptr;
         DrawMode mode = DrawMode::Normal;
+        // Called right before (before = true) and right after the decal's geometry is
+        // submitted, once the context is set up for the decal. Lets the caller add driver
+        // state for that one draw.
+        void (*aroundDraw)(void* userData, SC4DrawContext* drawContext, bool before) = nullptr;
+        void* aroundDrawUserData = nullptr;
     };
 
     struct TerrainDecalOverlayOverrides

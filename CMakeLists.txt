@@ -5,21 +5,33 @@ if(POLICY CMP0091)
     cmake_policy(SET CMP0091 NEW)
 endif()
 
-# Force 32-bit build for SimCity 4 compatibility BEFORE project() call
-# Set the platform regardless of current setting to ensure 32-bit
-set(CMAKE_GENERATOR_PLATFORM "Win32")
-message(STATUS "Forcing 32-bit build for SC4 compatibility")
+# True when built on its own, false when a parent project pulls this in with add_subdirectory.
+# PROJECT_IS_TOP_LEVEL needs CMake 3.21 and is only set after project().
+if(CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
+    set(SC4RS_IS_TOP_LEVEL ON)
+else()
+    set(SC4RS_IS_TOP_LEVEL OFF)
+endif()
 
-# Additional 32-bit enforcement
-if(WIN32)
-    set(CMAKE_SIZEOF_VOID_P 4)
-    set(CMAKE_C_SIZEOF_DATA_PTR 4)
-    set(CMAKE_CXX_SIZEOF_DATA_PTR 4)
+# Force 32-bit build for SimCity 4 compatibility BEFORE project() call.
+# A parent project picks its own generator and platform.
+if(SC4RS_IS_TOP_LEVEL)
+    set(CMAKE_GENERATOR_PLATFORM "Win32")
+    message(STATUS "Forcing 32-bit build for SC4 compatibility")
+
+    # Additional 32-bit enforcement
+    if(WIN32)
+        set(CMAKE_SIZEOF_VOID_P 4)
+        set(CMAKE_C_SIZEOF_DATA_PTR 4)
+        set(CMAKE_CXX_SIZEOF_DATA_PTR 4)
+    endif()
 endif()
 
 project(SC4RenderServices VERSION 0.0.1 LANGUAGES CXX)
 
 set(SC4RS_ROOT "${CMAKE_CURRENT_SOURCE_DIR}")
+
+option(SC4RS_BUILD_SAMPLES "Build the sample plugin DLLs" OFF)
 
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -56,10 +68,27 @@ if(MSVC)
     set(CMAKE_SHARED_LINKER_FLAGS_RELEASE "${CMAKE_SHARED_LINKER_FLAGS_RELEASE} /DEBUG /OPT:REF /OPT:ICF")
 endif()
 
+# Reuse a parent's spdlog and gzcom-dll when it already has them, instead of adding duplicates.
 if(NOT TARGET spdlog)
-    add_subdirectory(vendor/spdlog)
+    if(TARGET spdlog::spdlog)
+        add_library(spdlog ALIAS spdlog::spdlog)
+    else()
+        add_subdirectory(vendor/spdlog)
+    endif()
 endif()
-add_subdirectory(vendor/gzcom-dll)
+if(NOT TARGET gzcom_dll AND NOT TARGET gzcom2)
+    add_subdirectory(vendor/gzcom-dll)
+
+    # Keep CRT runtime consistent across all targets even if a subproject sets /MT(/d).
+    if(MSVC)
+        target_compile_options(gzcom_dll PRIVATE
+                "$<$<CONFIG:Debug>:/MDd>"
+                "$<$<CONFIG:Release>:/MD>"
+                "$<$<CONFIG:RelWithDebInfo>:/MD>"
+                "$<$<CONFIG:MinSizeRel>:/MD>"
+        )
+    endif()
+endif()
 
 set(MINI_INCLUDE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/vendor/mINI/src")
 if (NOT EXISTS "${MINI_INCLUDE_DIR}/mini/ini.h")
@@ -70,46 +99,52 @@ if (NOT EXISTS "${MINI_INCLUDE_DIR}/mini/ini.h")
     )
 endif ()
 
-# Keep CRT runtime consistent across all targets even if a subproject sets /MT(/d).
-if(MSVC)
-    target_compile_options(gzcom_dll PRIVATE
-            "$<$<CONFIG:Debug>:/MDd>"
-            "$<$<CONFIG:Release>:/MD>"
-            "$<$<CONFIG:RelWithDebInfo>:/MD>"
-            "$<$<CONFIG:MinSizeRel>:/MD>"
-    )
-endif()
+# ImGui library: upstream docking branch (vendor/imgui has no CMakeLists)
+set(IMGUI_DIR ${SC4RS_ROOT}/vendor/imgui)
 
-# ImGui library (vendor/imguid3d7 has no CMakeLists)
-set(IMGUI_DIR ${SC4RS_ROOT}/vendor/d3d7imgui/ImGui)
-
-# Add all core ImGui .cpp and .h files
-file(GLOB IMGUI_CORE_SOURCES
-        ${IMGUI_DIR}/*.cpp
-        ${IMGUI_DIR}/*.h
+set(IMGUI_CORE_SOURCES
+        ${IMGUI_DIR}/imgui.cpp
+        ${IMGUI_DIR}/imgui_demo.cpp
+        ${IMGUI_DIR}/imgui_draw.cpp
+        ${IMGUI_DIR}/imgui_tables.cpp
+        ${IMGUI_DIR}/imgui_widgets.cpp
+        ${IMGUI_DIR}/imgui.h
+        ${IMGUI_DIR}/imgui_internal.h
+        ${SC4RS_ROOT}/src/public/ImGuiUserConfig.h
 )
 
-# Explicitly add the Win32 and DX7 backend files
+# Win32 platform backend from upstream
 set(IMGUI_BACKENDS
-        ${IMGUI_DIR}/imgui_impl_win32.h
-        ${IMGUI_DIR}/imgui_impl_win32.cpp
-        ${IMGUI_DIR}/imgui_impl_dx7.h
-        ${IMGUI_DIR}/imgui_impl_dx7.cpp
+        ${IMGUI_DIR}/backends/imgui_impl_win32.h
+        ${IMGUI_DIR}/backends/imgui_impl_win32.cpp
 )
 
-add_library(imgui SHARED ${IMGUI_CORE_SOURCES} ${IMGUI_BACKENDS})
-
-target_include_directories(imgui PUBLIC
+# ImGui is compiled into SC4RenderServices.dll and exported from it. This target only carries
+# what every module that includes imgui.h needs to agree on: the headers and the config.
+add_library(imgui INTERFACE)
+target_include_directories(imgui INTERFACE
         ${IMGUI_DIR}
+        ${IMGUI_DIR}/backends
+        ${SC4RS_ROOT}/src/public
 )
-target_compile_definitions(imgui PRIVATE IMGUI_DLL_EXPORT)
+target_compile_definitions(imgui INTERFACE IMGUI_USER_CONFIG="ImGuiUserConfig.h")
 
-if(WIN32)
-    target_link_libraries(imgui PRIVATE user32 gdi32 ddraw dxguid)
-endif()
+# Links a plugin against the ImGui that SC4RenderServices.dll exports. The import is delay-loaded,
+# so load order does not matter: the game may load the plugin first, and the import resolves on
+# the first ImGui call, which a plugin makes only once it holds the ImGui service.
+# Also works from a project that adds this repository with add_subdirectory; pass EXCLUDE_FROM_ALL
+# there to keep the sample DLLs out of the parent's build.
+function(sc4rs_use_imgui target)
+    target_link_libraries(${target} PRIVATE SC4RenderServices imgui delayimp)
+    target_compile_definitions(${target} PRIVATE IMGUI_DLL_IMPORT)
+    target_link_options(${target} PRIVATE "/DELAYLOAD:SC4RenderServices.dll")
+    target_sources(${target} PRIVATE ${CMAKE_CURRENT_FUNCTION_LIST_DIR}/src/public/SC4RenderServicesDelayLoad.cpp)
+endfunction()
 
 # Preserve existing link name in this project while using the vendor CMake target.
-add_library(gzcom2 ALIAS gzcom_dll)
+if(NOT TARGET gzcom2)
+    add_library(gzcom2 ALIAS gzcom_dll)
+endif()
 
 # Include directories
 include_directories(
@@ -157,6 +192,7 @@ set(CUSTOM_SERVICES_SOURCES
         ${SC4RS_ROOT}/src/service/ImGuiService.cpp
         ${SC4RS_ROOT}/src/service/S3DCameraService.cpp
         ${SC4RS_ROOT}/src/service/DrawService.cpp
+        ${SC4RS_ROOT}/src/service/WorldDrawService.cpp
         ${SC4RS_ROOT}/src/service/decal/ClippedTerrainDecalRenderer.cpp
         ${SC4RS_ROOT}/src/service/decal/RelativeCallPatch.cpp
         ${SC4RS_ROOT}/src/service/decal/TerrainDecalRegistry.cpp
@@ -165,20 +201,25 @@ set(CUSTOM_SERVICES_SOURCES
         ${SC4RS_ROOT}/src/service/decal/TerrainDecalSymbols.cpp
         ${SC4RS_ROOT}/src/service/decal/TerrainDecalHook.cpp
         ${SC4RS_ROOT}/src/service/RenderServicesDirector.cpp
+        ${SC4RS_ROOT}/src/service/GraphicsDriverIdentification.cpp
         ${SC4RS_ROOT}/src/utils/VersionDetection.cpp
         ${SC4RS_ROOT}/src/utils/Logger.cpp
         ${SC4RS_ROOT}/src/utils/Settings.cpp
         ${SC4RS_ROOT}/src/DX7InterfaceHook.cpp
+        ${SC4RS_ROOT}/src/backends/imgui_impl_gzgdriver.cpp
 )
 
 add_library(SC4RenderServices SHARED
         ${CUSTOM_SERVICES_SOURCES}
+        ${IMGUI_CORE_SOURCES}
+        ${IMGUI_BACKENDS}
         ${SC4_COMMON_DIRECTOR_DEF}
         ${SC4_RENDER_SERVICES_VERSION_RESOURCE}
 )
 
 target_include_directories(SC4RenderServices PRIVATE
         ${SC4RS_ROOT}/src
+        ${SC4RS_ROOT}/src/backends
         ${SC4RS_ROOT}/src/service
         ${IMGUI_DIR}
         ${MINI_INCLUDE_DIR}
@@ -190,12 +231,12 @@ target_link_libraries(SC4RenderServices PRIVATE
         spdlog
 )
 target_compile_definitions(SC4RenderServices PRIVATE
-        IMGUI_DLL_IMPORT
+        IMGUI_DLL_EXPORT
         SC4RS_PRODUCT_VERSION_STR="${SC4RS_PRODUCT_VERSION_STR}"
 )
 
 if(WIN32)
-    target_link_libraries(SC4RenderServices PRIVATE kernel32 user32 Version ddraw dxguid winmm)
+    target_link_libraries(SC4RenderServices PRIVATE kernel32 user32 gdi32 Version ddraw dxguid winmm)
 endif()
 
 set_target_properties(SC4RenderServices PROPERTIES
@@ -205,356 +246,9 @@ set_target_properties(SC4RenderServices PROPERTIES
 )
 
 
-# ImGui sample DLL
-set(IMGUI_SAMPLE_SOURCES
-        ${SC4RS_ROOT}/src/sample/ImGuiSampleDirector.cpp
-        ${SC4RS_ROOT}/src/utils/Logger.cpp
-)
 
-add_library(SC4ImGuiSample SHARED ${IMGUI_SAMPLE_SOURCES} ${SC4_COMMON_DIRECTOR_DEF})
-
-target_include_directories(SC4ImGuiSample PRIVATE
-        ${SC4RS_ROOT}/src
-        ${SC4RS_ROOT}/src/service
-        ${IMGUI_DIR}
-)
-
-target_link_libraries(SC4ImGuiSample PRIVATE
-        imgui
-        gzcom2
-        spdlog
-)
-target_compile_definitions(SC4ImGuiSample PRIVATE IMGUI_DLL_IMPORT)
-
-set_target_properties(SC4ImGuiSample PROPERTIES
-        OUTPUT_NAME "SC4ImGuiSample"
-        SUFFIX ".dll"
-        PREFIX ""
-)
-
-
-# ImGui city-only sample DLL
-set(IMGUI_SAMPLE_CITY_SOURCES
-        ${SC4RS_ROOT}/src/sample/ImGuiSampleCityDirector.cpp
-        ${SC4RS_ROOT}/src/utils/Logger.cpp
-)
-
-add_library(SC4ImGuiSampleCity SHARED ${IMGUI_SAMPLE_CITY_SOURCES} ${SC4_COMMON_DIRECTOR_DEF})
-
-target_include_directories(SC4ImGuiSampleCity PRIVATE
-        ${SC4RS_ROOT}/src
-        ${SC4RS_ROOT}/src/service
-        ${IMGUI_DIR}
-)
-
-target_link_libraries(SC4ImGuiSampleCity PRIVATE
-        imgui
-        gzcom2
-        spdlog
-)
-
-target_compile_definitions(SC4ImGuiSampleCity PRIVATE IMGUI_DLL_IMPORT)
-
-set_target_properties(SC4ImGuiSampleCity PROPERTIES
-        OUTPUT_NAME "SC4ImGuiSampleCity"
-        SUFFIX ".dll"
-        PREFIX ""
-)
-
-
-# ImGui demo sample DLL
-set(IMGUI_SAMPLE_DEMO_SOURCES
-        ${SC4RS_ROOT}/src/sample/ImGuiSampleDemoDirector.cpp
-        ${SC4RS_ROOT}/src/utils/Logger.cpp
-)
-
-add_library(SC4ImGuiSampleDemo SHARED ${IMGUI_SAMPLE_DEMO_SOURCES} ${SC4_COMMON_DIRECTOR_DEF})
-
-target_include_directories(SC4ImGuiSampleDemo PRIVATE
-        ${SC4RS_ROOT}/src
-        ${SC4RS_ROOT}/src/service
-        ${IMGUI_DIR}
-)
-
-target_link_libraries(SC4ImGuiSampleDemo PRIVATE
-        imgui
-        gzcom2
-        spdlog
-)
-
-target_compile_definitions(SC4ImGuiSampleDemo PRIVATE IMGUI_DLL_IMPORT)
-
-set_target_properties(SC4ImGuiSampleDemo PROPERTIES
-        OUTPUT_NAME "SC4ImGuiSampleDemo"
-        SUFFIX ".dll"
-        PREFIX ""
-)
-
-
-# ImGui texture sample DLL
-set(IMGUI_TEXTURE_SAMPLE_SOURCES
-        ${SC4RS_ROOT}/src/sample/ImGuiTextureSample.cpp
-        ${SC4RS_ROOT}/src/utils/Logger.cpp
-)
-
-add_library(SC4ImGuiTextureSample SHARED ${IMGUI_TEXTURE_SAMPLE_SOURCES} ${SC4_COMMON_DIRECTOR_DEF})
-
-target_include_directories(SC4ImGuiTextureSample PRIVATE
-        ${SC4RS_ROOT}/src
-        ${SC4RS_ROOT}/src/service
-        ${IMGUI_DIR}
-)
-
-target_link_libraries(SC4ImGuiTextureSample PRIVATE
-        imgui
-        gzcom2
-        spdlog
-)
-
-target_compile_definitions(SC4ImGuiTextureSample PRIVATE IMGUI_DLL_IMPORT)
-
-set_target_properties(SC4ImGuiTextureSample PROPERTIES
-        OUTPUT_NAME "SC4ImGuiTextureSample"
-        SUFFIX ".dll"
-        PREFIX ""
-)
-
-
-# World Projection sample DLL
-set(WORLD_PROJECTION_SAMPLE_SOURCES
-        ${SC4RS_ROOT}/src/sample/WorldProjectionSampleDirector.cpp
-        ${SC4RS_ROOT}/src/DX7InterfaceHook.cpp
-        ${SC4RS_ROOT}/src/utils/Logger.cpp
-)
-
-add_library(SC4WorldProjectionSample SHARED ${WORLD_PROJECTION_SAMPLE_SOURCES} ${SC4_COMMON_DIRECTOR_DEF})
-
-target_include_directories(SC4WorldProjectionSample PRIVATE
-        ${SC4RS_ROOT}/src
-        ${SC4RS_ROOT}/src/service
-        ${IMGUI_DIR}
-)
-
-target_link_libraries(SC4WorldProjectionSample PRIVATE
-        imgui
-        gzcom2
-        spdlog
-)
-
-if(WIN32)
-    target_link_libraries(SC4WorldProjectionSample PRIVATE gdiplus)
-endif()
-
-target_compile_definitions(SC4WorldProjectionSample PRIVATE IMGUI_DLL_IMPORT)
-
-set_target_properties(SC4WorldProjectionSample PROPERTIES
-        OUTPUT_NAME "SC4WorldProjectionSample"
-        SUFFIX ".dll"
-        PREFIX ""
-)
-
-# S3D Camera debug sample DLL
-set(S3D_CAMERA_DEBUG_SAMPLE_SOURCES
-        ${SC4RS_ROOT}/src/sample/S3DCameraDebugSampleDirector.cpp
-        ${SC4RS_ROOT}/src/utils/Logger.cpp
-)
-
-add_library(SC4S3DCameraDebugSample SHARED ${S3D_CAMERA_DEBUG_SAMPLE_SOURCES} ${SC4_COMMON_DIRECTOR_DEF})
-
-target_include_directories(SC4S3DCameraDebugSample PRIVATE
-        ${SC4RS_ROOT}/src
-        ${SC4RS_ROOT}/src/service
-        ${IMGUI_DIR}
-)
-
-target_link_libraries(SC4S3DCameraDebugSample PRIVATE
-        imgui
-        gzcom2
-        spdlog
-)
-
-target_compile_definitions(SC4S3DCameraDebugSample PRIVATE IMGUI_DLL_IMPORT)
-
-set_target_properties(SC4S3DCameraDebugSample PROPERTIES
-        OUTPUT_NAME "SC4S3DCameraDebugSample"
-        SUFFIX ".dll"
-        PREFIX ""
-)
-
-# Overlay Manager sample DLL
-set(OVERLAY_MANAGER_SAMPLE_SOURCES
-        ${SC4RS_ROOT}/src/sample/OverlayManagerSampleDirector.cpp
-        ${SC4RS_ROOT}/src/utils/Logger.cpp
-)
-
-add_library(SC4OverlayManagerSample SHARED ${OVERLAY_MANAGER_SAMPLE_SOURCES} ${SC4_COMMON_DIRECTOR_DEF})
-
-target_include_directories(SC4OverlayManagerSample PRIVATE
-        ${SC4RS_ROOT}/src
-        ${SC4RS_ROOT}/src/service
-        ${IMGUI_DIR}
-)
-
-target_link_libraries(SC4OverlayManagerSample PRIVATE
-        imgui
-        gzcom2
-        spdlog
-)
-
-target_compile_definitions(SC4OverlayManagerSample PRIVATE IMGUI_DLL_IMPORT)
-
-set_target_properties(SC4OverlayManagerSample PROPERTIES
-        OUTPUT_NAME "SC4OverlayManagerSample"
-        SUFFIX ".dll"
-        PREFIX ""
-)
-
-# Draw Service sample DLL
-set(DRAW_SERVICE_SAMPLE_SOURCES
-        ${SC4RS_ROOT}/src/sample/DrawServiceSampleDirector.cpp
-        ${SC4RS_ROOT}/src/utils/Logger.cpp
-)
-
-add_library(SC4DrawServiceSample SHARED ${DRAW_SERVICE_SAMPLE_SOURCES} ${SC4_COMMON_DIRECTOR_DEF})
-
-target_include_directories(SC4DrawServiceSample PRIVATE
-        ${SC4RS_ROOT}/src
-        ${SC4RS_ROOT}/src/service
-        ${IMGUI_DIR}
-)
-
-target_link_libraries(SC4DrawServiceSample PRIVATE
-        imgui
-        gzcom2
-        spdlog
-)
-
-target_compile_definitions(SC4DrawServiceSample PRIVATE IMGUI_DLL_IMPORT)
-
-set_target_properties(SC4DrawServiceSample PROPERTIES
-        OUTPUT_NAME "SC4DrawServiceSample"
-        SUFFIX ".dll"
-        PREFIX ""
-)
-
-# Road Decal sample DLL
-set(ROAD_DECAL_SAMPLE_SOURCES
-        ${SC4RS_ROOT}/src/sample/road-decal/RoadDecalSampleDirector.cpp
-        ${SC4RS_ROOT}/src/sample/road-decal/RoadDecalData.cpp
-        ${SC4RS_ROOT}/src/sample/road-decal/RoadDecalInputControl.cpp
-        ${SC4RS_ROOT}/src/utils/Logger.cpp
-)
-
-add_library(SC4RoadDecalSample SHARED ${ROAD_DECAL_SAMPLE_SOURCES} ${SC4_COMMON_DIRECTOR_DEF})
-
-target_include_directories(SC4RoadDecalSample PRIVATE
-        ${SC4RS_ROOT}/src
-        ${SC4RS_ROOT}/src/service
-        ${IMGUI_DIR}
-)
-
-target_link_libraries(SC4RoadDecalSample PRIVATE
-        imgui
-        gzcom2
-        spdlog
-)
-
-target_compile_definitions(SC4RoadDecalSample PRIVATE IMGUI_DLL_IMPORT)
-
-set_target_properties(SC4RoadDecalSample PROPERTIES
-        OUTPUT_NAME "SC4RoadDecalSample"
-        SUFFIX ".dll"
-        PREFIX ""
-)
-
-# Terrain Decal sample DLL
-set(TERRAIN_DECAL_SAMPLE_SOURCES
-        ${SC4RS_ROOT}/src/sample/TerrainDecalSampleDirector.cpp
-        ${SC4RS_ROOT}/src/utils/Logger.cpp
-)
-
-add_library(SC4TerrainDecalSample SHARED ${TERRAIN_DECAL_SAMPLE_SOURCES} ${SC4_COMMON_DIRECTOR_DEF})
-
-target_include_directories(SC4TerrainDecalSample PRIVATE
-        ${SC4RS_ROOT}/src
-        ${SC4RS_ROOT}/src/service
-        ${IMGUI_DIR}
-)
-
-target_link_libraries(SC4TerrainDecalSample PRIVATE
-        imgui
-        gzcom2
-        spdlog
-)
-
-target_compile_definitions(SC4TerrainDecalSample PRIVATE IMGUI_DLL_IMPORT)
-
-set_target_properties(SC4TerrainDecalSample PROPERTIES
-        OUTPUT_NAME "SC4TerrainDecalSample"
-        SUFFIX ".dll"
-        PREFIX ""
-)
-
-# Camera View Input sample DLL
-set(CAMERA_VIEW_INPUT_SAMPLE_SOURCES
-        ${SC4RS_ROOT}/src/sample/camera-view-input/CameraViewInputSampleDirector.cpp
-        ${SC4RS_ROOT}/src/sample/camera-view-input/CameraViewInputControl.cpp
-        ${SC4RS_ROOT}/src/utils/Logger.cpp
-)
-
-add_library(SC4CameraViewInputSample SHARED ${CAMERA_VIEW_INPUT_SAMPLE_SOURCES} ${SC4_COMMON_DIRECTOR_DEF})
-
-target_include_directories(SC4CameraViewInputSample PRIVATE
-        ${SC4RS_ROOT}/src
-        ${SC4RS_ROOT}/src/service
-        ${IMGUI_DIR}
-)
-
-target_link_libraries(SC4CameraViewInputSample PRIVATE
-        imgui
-        gzcom2
-        spdlog
-)
-
-target_compile_definitions(SC4CameraViewInputSample PRIVATE IMGUI_DLL_IMPORT)
-
-set_target_properties(SC4CameraViewInputSample PROPERTIES
-        OUTPUT_NAME "SC4CameraViewInputSample"
-        SUFFIX ".dll"
-        PREFIX ""
-)
-
-
-# Date Jumper sample DLL (Ctrl+F9 to fast-forward to the next seasonal date)
-set(DATE_JUMPER_SAMPLE_SOURCES
-        ${SC4RS_ROOT}/src/sample/date-jumper/DateJumperDirector.cpp
-        ${SC4RS_ROOT}/src/utils/Logger.cpp
-)
-
-add_library(SC4DateJumperSample SHARED ${DATE_JUMPER_SAMPLE_SOURCES} ${SC4_COMMON_DIRECTOR_DEF})
-
-target_include_directories(SC4DateJumperSample PRIVATE
-        ${SC4RS_ROOT}/src
-)
-
-target_link_libraries(SC4DateJumperSample PRIVATE
-        gzcom2
-        spdlog
-)
-
-set_target_properties(SC4DateJumperSample PROPERTIES
-        OUTPUT_NAME "SC4DateJumperSample"
-        SUFFIX ".dll"
-        PREFIX ""
-)
-
-
-add_custom_target(SC4RenderServicesAllTargets
-        DEPENDS imgui SC4RenderServices SC4ImGuiSample SC4ImGuiSampleCity SC4ImGuiSampleDemo SC4ImGuiTextureSample SC4WorldProjectionSample SC4S3DCameraDebugSample SC4OverlayManagerSample SC4DrawServiceSample SC4RoadDecalSample SC4TerrainDecalSample SC4CameraViewInputSample SC4DateJumperSample
-)
-
-# Automatic deployment to SC4 directories
-if(WIN32 AND NOT DEFINED ENV{CI})
+# Automatic deployment to SC4 directories (a parent project handles its own deployment)
+if(WIN32 AND SC4RS_IS_TOP_LEVEL AND NOT DEFINED ENV{CI})
     # Try to find SC4 installation directory
     set(SC4_INSTALL_PATHS
             "C:/Program Files (x86)/SimCity 4 Deluxe Edition"
@@ -580,14 +274,6 @@ if(WIN32 AND NOT DEFINED ENV{CI})
     if(SC4_INSTALL_DIR)
         message(STATUS "Found SC4 installation at: ${SC4_INSTALL_DIR}")
 
-        add_custom_command(TARGET imgui POST_BUILD
-                COMMAND ${CMAKE_COMMAND} -E make_directory "${SC4_INSTALL_DIR}/Apps"
-                COMMAND ${CMAKE_COMMAND} -E copy_if_different
-                $<TARGET_FILE:imgui>
-                "${SC4_INSTALL_DIR}/Apps/"
-                COMMENT "Deploying imgui.dll to Apps folder"
-        )
-
         add_custom_command(TARGET SC4RenderServices POST_BUILD
                 COMMAND ${CMAKE_COMMAND} -E make_directory "${SC4_PLUGINS_DIR}"
                 COMMAND ${CMAKE_COMMAND} -E copy_if_different
@@ -600,101 +286,17 @@ if(WIN32 AND NOT DEFINED ENV{CI})
                 COMMENT "Deploying SC4RenderServices.dll to Plugins folder (INI only if missing)"
         )
 
-        add_custom_command(TARGET SC4ImGuiSample POST_BUILD
-                COMMAND ${CMAKE_COMMAND} -E make_directory "${SC4_PLUGINS_DIR}"
-                COMMAND ${CMAKE_COMMAND} -E copy_if_different
-                $<TARGET_FILE:SC4ImGuiSample>
-                "${SC4_PLUGINS_DIR}/"
-                COMMENT "Deploying SC4ImGuiSample.dll to Plugins folder"
-        )
-
-        add_custom_command(TARGET SC4ImGuiSampleCity POST_BUILD
-                COMMAND ${CMAKE_COMMAND} -E make_directory "${SC4_PLUGINS_DIR}"
-                COMMAND ${CMAKE_COMMAND} -E copy_if_different
-                $<TARGET_FILE:SC4ImGuiSampleCity>
-                "${SC4_PLUGINS_DIR}/"
-                COMMENT "Deploying SC4ImGuiSampleCity.dll to Plugins folder"
-        )
-
-        add_custom_command(TARGET SC4ImGuiSampleDemo POST_BUILD
-                COMMAND ${CMAKE_COMMAND} -E make_directory "${SC4_PLUGINS_DIR}"
-                COMMAND ${CMAKE_COMMAND} -E copy_if_different
-                $<TARGET_FILE:SC4ImGuiSampleDemo>
-                "${SC4_PLUGINS_DIR}/"
-                COMMENT "Deploying SC4ImGuiSampleDemo.dll to Plugins folder"
-        )
-
-        add_custom_command(TARGET SC4ImGuiTextureSample POST_BUILD
-                COMMAND ${CMAKE_COMMAND} -E make_directory "${SC4_PLUGINS_DIR}"
-                COMMAND ${CMAKE_COMMAND} -E copy_if_different
-                $<TARGET_FILE:SC4ImGuiTextureSample>
-                "${SC4_PLUGINS_DIR}/"
-                COMMENT "Deploying SC4ImGuiTextureSample.dll to Plugins folder"
-        )
-
-        add_custom_command(TARGET SC4WorldProjectionSample POST_BUILD
-                COMMAND ${CMAKE_COMMAND} -E make_directory "${SC4_PLUGINS_DIR}"
-                COMMAND ${CMAKE_COMMAND} -E copy_if_different
-                $<TARGET_FILE:SC4WorldProjectionSample>
-                "${SC4_PLUGINS_DIR}/"
-                COMMENT "Deploying SC4WorldProjectionSample.dll to Plugins folder"
-        )
-
-        add_custom_command(TARGET SC4DrawServiceSample POST_BUILD
-                COMMAND ${CMAKE_COMMAND} -E make_directory "${SC4_PLUGINS_DIR}"
-                COMMAND ${CMAKE_COMMAND} -E copy_if_different
-                $<TARGET_FILE:SC4DrawServiceSample>
-                "${SC4_PLUGINS_DIR}/"
-                COMMENT "Deploying SC4DrawServiceSample.dll to Plugins folder"
-        )
-
-        add_custom_command(TARGET SC4RoadDecalSample POST_BUILD
-                COMMAND ${CMAKE_COMMAND} -E make_directory "${SC4_PLUGINS_DIR}"
-                COMMAND ${CMAKE_COMMAND} -E copy_if_different
-                $<TARGET_FILE:SC4RoadDecalSample>
-                "${SC4_PLUGINS_DIR}/"
-                COMMENT "Deploying SC4RoadDecalSample.dll to Plugins folder"
-        )
-
-        add_custom_command(TARGET SC4TerrainDecalSample POST_BUILD
-                COMMAND ${CMAKE_COMMAND} -E make_directory "${SC4_PLUGINS_DIR}"
-                COMMAND ${CMAKE_COMMAND} -E copy_if_different
-                $<TARGET_FILE:SC4TerrainDecalSample>
-                "${SC4_PLUGINS_DIR}/"
-                COMMENT "Deploying SC4TerrainDecalSample.dll to Plugins folder"
-        )
-
-        add_custom_command(TARGET SC4CameraViewInputSample POST_BUILD
-                COMMAND ${CMAKE_COMMAND} -E make_directory "${SC4_PLUGINS_DIR}"
-                COMMAND ${CMAKE_COMMAND} -E copy_if_different
-                $<TARGET_FILE:SC4CameraViewInputSample>
-                "${SC4_PLUGINS_DIR}/"
-                COMMENT "Deploying SC4CameraViewInputSample.dll to Plugins folder"
-        )
-
-        add_custom_command(TARGET SC4DateJumperSample POST_BUILD
-                COMMAND ${CMAKE_COMMAND} -E make_directory "${SC4_PLUGINS_DIR}"
-                COMMAND ${CMAKE_COMMAND} -E copy_if_different
-                $<TARGET_FILE:SC4DateJumperSample>
-                "${SC4_PLUGINS_DIR}/"
-                COMMENT "Deploying SC4DateJumperSample.dll to Plugins folder"
-        )
-
         message(STATUS "Deployment targets configured:")
-        message(STATUS "  - imgui.dll -> ${SC4_INSTALL_DIR}/Apps/")
         message(STATUS "  - SC4RenderServices.dll -> ${SC4_PLUGINS_DIR}/")
-        message(STATUS "  - SC4ImGuiSample.dll -> ${SC4_PLUGINS_DIR}/")
-        message(STATUS "  - SC4ImGuiSampleCity.dll -> ${SC4_PLUGINS_DIR}/")
-        message(STATUS "  - SC4ImGuiSampleDemo.dll -> ${SC4_PLUGINS_DIR}/")
-        message(STATUS "  - SC4ImGuiTextureSample.dll -> ${SC4_PLUGINS_DIR}/")
-        message(STATUS "  - SC4WorldProjectionSample.dll -> ${SC4_PLUGINS_DIR}/")
-        message(STATUS "  - SC4DrawServiceSample.dll -> ${SC4_PLUGINS_DIR}/")
-        message(STATUS "  - SC4RoadDecalSample.dll -> ${SC4_PLUGINS_DIR}/")
-        message(STATUS "  - SC4TerrainDecalSample.dll -> ${SC4_PLUGINS_DIR}/")
-        message(STATUS "  - SC4CameraViewInputSample.dll -> ${SC4_PLUGINS_DIR}/")
     else()
         message(WARNING "SC4 installation not found. Manual deployment required.")
     endif()
 endif()
+
+if(SC4RS_BUILD_SAMPLES)
+    include(${SC4RS_ROOT}/cmake/Samples.cmake)
+endif()
+
+add_custom_target(SC4RenderServicesAllTargets DEPENDS SC4RenderServices ${SC4RS_SAMPLE_TARGETS})
 
 # Install targets

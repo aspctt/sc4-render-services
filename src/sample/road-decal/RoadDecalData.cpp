@@ -11,12 +11,6 @@
 #include <fstream>
 #include <vector>
 
-#ifndef NOMINMAX
-#define NOMINMAX
-#endif
-#include <d3d.h>
-#include <d3dtypes.h>
-#include <ddraw.h>
 
 #include "cISC4App.h"
 #include "cISC4City.h"
@@ -26,7 +20,7 @@
 #include "cIGZOStream.h"
 #include "cIGZSerializable.h"
 #include "cIGZVariant.h"
-#include "public/cIGZImGuiService.h"
+#include "public/cIGZWorldDrawService.h"
 #include "utils/Logger.h"
 
 #ifdef min
@@ -36,7 +30,6 @@
 #undef max
 #endif
 
-std::atomic<cIGZImGuiService*> gImGuiServiceForD3DOverlay{nullptr};
 std::vector<RoadMarkupLayer> gRoadMarkupLayers;
 int gActiveLayerIndex = 0;
 int gSelectedLayerIndex = -1;
@@ -46,7 +39,6 @@ namespace
 {
     constexpr float kDecalTerrainOffset = 0.05f;
     constexpr float kTerrainGridSpacing = 16.0f;
-    constexpr uint32_t kRoadDecalZBias = 1;
     constexpr float kMinLen = 1.0e-4f;
     constexpr float kDoubleYellowSpacing = 0.10f;
     constexpr float kTileSize = 16.0f;
@@ -58,138 +50,51 @@ namespace
     constexpr uint32_t kRoadMarkupSerializableClsid = 0xA6D45122;
     constexpr uint32_t kSelectionHighlightColor = 0xF000A5FF;
 
-    struct RoadDecalStateGuard
-    {
-        explicit RoadDecalStateGuard(IDirect3DDevice7* dev)
-            : device(dev)
-        {
-            if (!device) {
-                return;
-            }
-
-            okZEnable = SUCCEEDED(device->GetRenderState(D3DRENDERSTATE_ZENABLE, &zEnable));
-            okZWrite = SUCCEEDED(device->GetRenderState(D3DRENDERSTATE_ZWRITEENABLE, &zWrite));
-            okLighting = SUCCEEDED(device->GetRenderState(D3DRENDERSTATE_LIGHTING, &lighting));
-            okAlphaBlend = SUCCEEDED(device->GetRenderState(D3DRENDERSTATE_ALPHABLENDENABLE, &alphaBlend));
-            okAlphaTest = SUCCEEDED(device->GetRenderState(D3DRENDERSTATE_ALPHATESTENABLE, &alphaTest));
-            okAlphaFunc = SUCCEEDED(device->GetRenderState(D3DRENDERSTATE_ALPHAFUNC, &alphaFunc));
-            okAlphaRef = SUCCEEDED(device->GetRenderState(D3DRENDERSTATE_ALPHAREF, &alphaRef));
-            okStencilEnable = SUCCEEDED(device->GetRenderState(D3DRENDERSTATE_STENCILENABLE, &stencilEnable));
-            okSrcBlend = SUCCEEDED(device->GetRenderState(D3DRENDERSTATE_SRCBLEND, &srcBlend));
-            okDstBlend = SUCCEEDED(device->GetRenderState(D3DRENDERSTATE_DESTBLEND, &dstBlend));
-            okCullMode = SUCCEEDED(device->GetRenderState(D3DRENDERSTATE_CULLMODE, &cullMode));
-            okFogEnable = SUCCEEDED(device->GetRenderState(D3DRENDERSTATE_FOGENABLE, &fogEnable));
-            okRangeFogEnable = SUCCEEDED(device->GetRenderState(D3DRENDERSTATE_RANGEFOGENABLE, &rangeFogEnable));
-            okZFunc = SUCCEEDED(device->GetRenderState(D3DRENDERSTATE_ZFUNC, &zFunc));
-            okZBias = SUCCEEDED(device->GetRenderState(D3DRENDERSTATE_ZBIAS, &zBias));
-            okTexture0 = SUCCEEDED(device->GetTexture(0, &texture0));
-            okTexture1 = SUCCEEDED(device->GetTexture(1, &texture1));
-            okTs0ColorOp = SUCCEEDED(device->GetTextureStageState(0, D3DTSS_COLOROP, &ts0ColorOp));
-            okTs0ColorArg1 = SUCCEEDED(device->GetTextureStageState(0, D3DTSS_COLORARG1, &ts0ColorArg1));
-            okTs0AlphaOp = SUCCEEDED(device->GetTextureStageState(0, D3DTSS_ALPHAOP, &ts0AlphaOp));
-            okTs0AlphaArg1 = SUCCEEDED(device->GetTextureStageState(0, D3DTSS_ALPHAARG1, &ts0AlphaArg1));
-            okTs1ColorOp = SUCCEEDED(device->GetTextureStageState(1, D3DTSS_COLOROP, &ts1ColorOp));
-            okTs1AlphaOp = SUCCEEDED(device->GetTextureStageState(1, D3DTSS_ALPHAOP, &ts1AlphaOp));
-        }
-
-        ~RoadDecalStateGuard()
-        {
-            if (!device) {
-                return;
-            }
-
-            if (okZEnable) device->SetRenderState(D3DRENDERSTATE_ZENABLE, zEnable);
-            if (okZWrite) device->SetRenderState(D3DRENDERSTATE_ZWRITEENABLE, zWrite);
-            if (okLighting) device->SetRenderState(D3DRENDERSTATE_LIGHTING, lighting);
-            if (okAlphaBlend) device->SetRenderState(D3DRENDERSTATE_ALPHABLENDENABLE, alphaBlend);
-            if (okAlphaTest) device->SetRenderState(D3DRENDERSTATE_ALPHATESTENABLE, alphaTest);
-            if (okAlphaFunc) device->SetRenderState(D3DRENDERSTATE_ALPHAFUNC, alphaFunc);
-            if (okAlphaRef) device->SetRenderState(D3DRENDERSTATE_ALPHAREF, alphaRef);
-            if (okStencilEnable) device->SetRenderState(D3DRENDERSTATE_STENCILENABLE, stencilEnable);
-            if (okSrcBlend) device->SetRenderState(D3DRENDERSTATE_SRCBLEND, srcBlend);
-            if (okDstBlend) device->SetRenderState(D3DRENDERSTATE_DESTBLEND, dstBlend);
-            if (okCullMode) device->SetRenderState(D3DRENDERSTATE_CULLMODE, cullMode);
-            if (okFogEnable) device->SetRenderState(D3DRENDERSTATE_FOGENABLE, fogEnable);
-            if (okRangeFogEnable) device->SetRenderState(D3DRENDERSTATE_RANGEFOGENABLE, rangeFogEnable);
-            if (okZFunc) device->SetRenderState(D3DRENDERSTATE_ZFUNC, zFunc);
-            if (okZBias) device->SetRenderState(D3DRENDERSTATE_ZBIAS, zBias);
-            if (okTexture0) device->SetTexture(0, texture0);
-            if (okTexture1) device->SetTexture(1, texture1);
-            if (okTs0ColorOp) device->SetTextureStageState(0, D3DTSS_COLOROP, ts0ColorOp);
-            if (okTs0ColorArg1) device->SetTextureStageState(0, D3DTSS_COLORARG1, ts0ColorArg1);
-            if (okTs0AlphaOp) device->SetTextureStageState(0, D3DTSS_ALPHAOP, ts0AlphaOp);
-            if (okTs0AlphaArg1) device->SetTextureStageState(0, D3DTSS_ALPHAARG1, ts0AlphaArg1);
-            if (okTs1ColorOp) device->SetTextureStageState(1, D3DTSS_COLOROP, ts1ColorOp);
-            if (okTs1AlphaOp) device->SetTextureStageState(1, D3DTSS_ALPHAOP, ts1AlphaOp);
-            if (texture0) texture0->Release();
-            if (texture1) texture1->Release();
-        }
-
-        IDirect3DDevice7* device = nullptr;
-        bool okZEnable = false;
-        bool okZWrite = false;
-        bool okLighting = false;
-        bool okAlphaBlend = false;
-        bool okAlphaTest = false;
-        bool okAlphaFunc = false;
-        bool okAlphaRef = false;
-        bool okStencilEnable = false;
-        bool okSrcBlend = false;
-        bool okDstBlend = false;
-        bool okCullMode = false;
-        bool okFogEnable = false;
-        bool okRangeFogEnable = false;
-        bool okZFunc = false;
-        bool okZBias = false;
-        bool okTexture0 = false;
-        bool okTexture1 = false;
-        bool okTs0ColorOp = false;
-        bool okTs0ColorArg1 = false;
-        bool okTs0AlphaOp = false;
-        bool okTs0AlphaArg1 = false;
-        bool okTs1ColorOp = false;
-        bool okTs1AlphaOp = false;
-        DWORD zEnable = 0;
-        DWORD zWrite = 0;
-        DWORD lighting = 0;
-        DWORD alphaBlend = 0;
-        DWORD alphaTest = 0;
-        DWORD alphaFunc = 0;
-        DWORD alphaRef = 0;
-        DWORD stencilEnable = 0;
-        DWORD srcBlend = 0;
-        DWORD dstBlend = 0;
-        DWORD cullMode = 0;
-        DWORD fogEnable = 0;
-        DWORD rangeFogEnable = 0;
-        DWORD zFunc = 0;
-        DWORD zBias = 0;
-        DWORD ts0ColorOp = 0;
-        DWORD ts0ColorArg1 = 0;
-        DWORD ts0AlphaOp = 0;
-        DWORD ts0AlphaArg1 = 0;
-        DWORD ts1ColorOp = 0;
-        DWORD ts1AlphaOp = 0;
-        IDirectDrawSurface7* texture0 = nullptr;
-        IDirectDrawSurface7* texture1 = nullptr;
-    };
-
-    struct RoadDecalVertex
-    {
-        float x;
-        float y;
-        float z;
-        DWORD diffuse;
-    };
+    // The world draw service's vertex: position, colour, UV (unused here).
+    using RoadDecalVertex = SC4WorldVertex;
 
     void BuildStrokeVertices(const RoadMarkupStroke& stroke, std::vector<RoadDecalVertex>& outVerts);
-    void DrawVertexBuffer(IDirect3DDevice7* device, const std::vector<RoadDecalVertex>& verts);
 
     std::vector<RoadDecalVertex> gRoadDecalVertices;
     std::vector<RoadDecalVertex> gRoadDecalActiveVertices;
     std::vector<RoadDecalVertex> gRoadDecalPreviewVertices;
     std::vector<RoadDecalVertex> gRoadDecalGridVertices;
     std::vector<RoadDecalVertex> gRoadDecalSelectionVertices;
+
+    // Each list above lives in a world draw layer. The service draws the layers every frame,
+    // so the lists are only sent again when they change.
+    enum class RoadDecalLayer : size_t { Committed, Selection, Active, Preview, Grid, Count };
+
+    cIGZWorldDrawService* gWorldDraw = nullptr;
+    std::array<uint32_t, static_cast<size_t>(RoadDecalLayer::Count)> gLayerIds{};
+
+    const std::vector<RoadDecalVertex>& LayerVertices(const RoadDecalLayer layer)
+    {
+        switch (layer) {
+        case RoadDecalLayer::Committed: return gRoadDecalVertices;
+        case RoadDecalLayer::Selection: return gRoadDecalSelectionVertices;
+        case RoadDecalLayer::Active: return gRoadDecalActiveVertices;
+        case RoadDecalLayer::Preview: return gRoadDecalPreviewVertices;
+        default: return gRoadDecalGridVertices;
+        }
+    }
+
+    void UploadLayer(const RoadDecalLayer layer)
+    {
+        const uint32_t id = gLayerIds[static_cast<size_t>(layer)];
+        if (!gWorldDraw || id == 0) {
+            return;
+        }
+        const auto& vertices = LayerVertices(layer);
+        gWorldDraw->SetLayerTriangles(id, vertices.data(), static_cast<uint32_t>(vertices.size()));
+    }
+
+    // Sends a layer's list to the service when the function that changed it returns.
+    struct UploadOnExit
+    {
+        RoadDecalLayer layer;
+        ~UploadOnExit() { UploadLayer(layer); }
+    };
 
     struct StrokeRef
     {
@@ -239,7 +144,7 @@ namespace
         return kMarkupProps[0];
     }
 
-    DWORD ApplyOpacity(uint32_t color, float opacity)
+    uint32_t ApplyOpacity(uint32_t color, float opacity)
     {
         opacity = std::clamp(opacity, 0.0f, 1.0f);
         const uint32_t baseA = (color >> 24U) & 0xFFU;
@@ -670,14 +575,14 @@ namespace
         }
     }
 
-    void EmitTriangle(const RoadDecalPoint& a, const RoadDecalPoint& b, const RoadDecalPoint& c, DWORD color, std::vector<RoadDecalVertex>& outVerts)
+    void EmitTriangle(const RoadDecalPoint& a, const RoadDecalPoint& b, const RoadDecalPoint& c, uint32_t color, std::vector<RoadDecalVertex>& outVerts)
     {
         outVerts.push_back({a.x, a.y, a.z, color});
         outVerts.push_back({b.x, b.y, b.z, color});
         outVerts.push_back({c.x, c.y, c.z, color});
     }
 
-    void EmitQuad(const RoadDecalPoint& a, const RoadDecalPoint& b, const RoadDecalPoint& c, const RoadDecalPoint& d, DWORD color, std::vector<RoadDecalVertex>& outVerts)
+    void EmitQuad(const RoadDecalPoint& a, const RoadDecalPoint& b, const RoadDecalPoint& c, const RoadDecalPoint& d, uint32_t color, std::vector<RoadDecalVertex>& outVerts)
     {
         EmitTriangle(a, b, c, color, outVerts);
         EmitTriangle(a, c, d, color, outVerts);
@@ -686,7 +591,7 @@ namespace
     void EmitThickSegmentNoConform(const RoadDecalPoint& a,
                                    const RoadDecalPoint& b,
                                    float width,
-                                   DWORD color,
+                                   uint32_t color,
                                    std::vector<RoadDecalVertex>& outVerts)
     {
         float tx = 0.0f;
@@ -723,7 +628,7 @@ namespace
 
     void BuildLine(const std::vector<RoadDecalPoint>& points,
                    float width,
-                   DWORD color,
+                   uint32_t color,
                    bool dashed,
                    float dashLength,
                    float gapLength,
@@ -795,7 +700,7 @@ namespace
         }
     }
 
-    void BuildStraightArrow(const RoadMarkupStroke& stroke, DWORD color, std::vector<RoadDecalVertex>& outVerts)
+    void BuildStraightArrow(const RoadMarkupStroke& stroke, uint32_t color, std::vector<RoadDecalVertex>& outVerts)
     {
         if (stroke.points.empty()) {
             return;
@@ -822,7 +727,7 @@ namespace
         EmitTriangle(shape[5], shape[4], shape[6], color, outVerts);
     }
 
-    void BuildTurnArrow(const RoadMarkupStroke& stroke, bool left, bool withStraight, DWORD color, std::vector<RoadDecalVertex>& outVerts)
+    void BuildTurnArrow(const RoadMarkupStroke& stroke, bool left, bool withStraight, uint32_t color, std::vector<RoadDecalVertex>& outVerts)
     {
         if (withStraight) {
             BuildStraightArrow(stroke, color, outVerts);
@@ -849,7 +754,7 @@ namespace
         BuildStraightArrow(head, color, outVerts);
     }
 
-    void BuildUTurnArrow(const RoadMarkupStroke& stroke, DWORD color, std::vector<RoadDecalVertex>& outVerts)
+    void BuildUTurnArrow(const RoadMarkupStroke& stroke, uint32_t color, std::vector<RoadDecalVertex>& outVerts)
     {
         const RoadDecalPoint center = stroke.points.front();
         const float fx = std::cos(stroke.rotation);
@@ -883,7 +788,7 @@ namespace
                         float stripe,
                         float gap,
                         bool ladderRails,
-                        DWORD color,
+                        uint32_t color,
                         std::vector<RoadDecalVertex>& outVerts)
     {
         const auto& start = stroke.points[0];
@@ -1256,6 +1161,7 @@ bool RotateSelectedRoadMarkupStroke(float deltaRadians)
 
 void RebuildRoadDecalGeometry()
 {
+    const UploadOnExit upload{RoadDecalLayer::Committed};
     EnsureDefaultRoadMarkupLayer();
     gRoadDecalVertices.clear();
     std::vector<const RoadMarkupLayer*> orderedLayers;
@@ -1282,71 +1188,48 @@ void RebuildRoadDecalGeometry()
     SetRoadDecalSelectedStroke(GetSelectedRoadMarkupStrokeConst());
 }
 
-void DrawRoadDecals()
+bool InitRoadDecalRendering(cIGZWorldDrawService* worldDraw)
 {
-    if (gRoadDecalVertices.empty() &&
-        gRoadDecalActiveVertices.empty() &&
-        gRoadDecalPreviewVertices.empty() &&
-        gRoadDecalGridVertices.empty() &&
-        gRoadDecalSelectionVertices.empty()) {
-        return;
+    ShutdownRoadDecalRendering();
+    if (!worldDraw) {
+        return false;
     }
 
-    auto* imguiService = gImGuiServiceForD3DOverlay.load(std::memory_order_acquire);
-    if (!imguiService) {
-        return;
+    // Markings sit on the ground: hidden behind hills and buildings, faded by fog like the
+    // terrain, pulled forward a little so they don't flicker against it.
+    const SC4WorldStyle style{.depthBias = 1, .fadeWithFog = true};
+    for (size_t i = 0; i < gLayerIds.size(); ++i) {
+        gLayerIds[i] = worldDraw->CreateLayer(DrawServicePass::PreDynamic, style, static_cast<int32_t>(i));
+        if (gLayerIds[i] == 0) {
+            LOG_WARN("RoadMarkup: could not create the world draw layers, markings will not be shown");
+            gWorldDraw = worldDraw;
+            ShutdownRoadDecalRendering();
+            return false;
+        }
     }
-
-    IDirect3DDevice7* device = nullptr;
-    IDirectDraw7* dd = nullptr;
-    if (!imguiService->AcquireD3DInterfaces(&device, &dd)) {
-        return;
+    gWorldDraw = worldDraw;
+    for (size_t i = 0; i < gLayerIds.size(); ++i) {
+        UploadLayer(static_cast<RoadDecalLayer>(i));
     }
+    return true;
+}
 
-    if (dd) {
-        dd->Release();
+void ShutdownRoadDecalRendering()
+{
+    if (gWorldDraw) {
+        for (uint32_t& id : gLayerIds) {
+            if (id != 0) {
+                gWorldDraw->DestroyLayer(id);
+            }
+            id = 0;
+        }
     }
-    if (!device) {
-        return;
-    }
-
-    {
-        RoadDecalStateGuard state(device);
-        device->SetRenderState(D3DRENDERSTATE_ZENABLE, TRUE);
-        device->SetRenderState(D3DRENDERSTATE_ZFUNC, D3DCMP_LESSEQUAL);
-        device->SetRenderState(D3DRENDERSTATE_ZWRITEENABLE, FALSE);
-        device->SetRenderState(D3DRENDERSTATE_LIGHTING, FALSE);
-        device->SetRenderState(D3DRENDERSTATE_FOGENABLE, TRUE);
-        device->SetRenderState(D3DRENDERSTATE_RANGEFOGENABLE, TRUE);
-        device->SetRenderState(D3DRENDERSTATE_CULLMODE, D3DCULL_NONE);
-        device->SetRenderState(D3DRENDERSTATE_ALPHABLENDENABLE, TRUE);
-        device->SetRenderState(D3DRENDERSTATE_ALPHATESTENABLE, FALSE);
-        device->SetRenderState(D3DRENDERSTATE_ALPHAFUNC, D3DCMP_ALWAYS);
-        device->SetRenderState(D3DRENDERSTATE_ALPHAREF, 0);
-        device->SetRenderState(D3DRENDERSTATE_STENCILENABLE, FALSE);
-        device->SetRenderState(D3DRENDERSTATE_SRCBLEND, D3DBLEND_SRCALPHA);
-        device->SetRenderState(D3DRENDERSTATE_DESTBLEND, D3DBLEND_INVSRCALPHA);
-        device->SetRenderState(D3DRENDERSTATE_ZBIAS, kRoadDecalZBias);
-        device->SetTexture(0, nullptr);
-        device->SetTextureStageState(0, D3DTSS_COLOROP, D3DTOP_SELECTARG1);
-        device->SetTextureStageState(0, D3DTSS_COLORARG1, D3DTA_DIFFUSE);
-        device->SetTextureStageState(0, D3DTSS_ALPHAOP, D3DTOP_SELECTARG1);
-        device->SetTextureStageState(0, D3DTSS_ALPHAARG1, D3DTA_DIFFUSE);
-        device->SetTextureStageState(1, D3DTSS_COLOROP, D3DTOP_DISABLE);
-        device->SetTextureStageState(1, D3DTSS_ALPHAOP, D3DTOP_DISABLE);
-
-        DrawVertexBuffer(device, gRoadDecalVertices);
-        DrawVertexBuffer(device, gRoadDecalSelectionVertices);
-        DrawVertexBuffer(device, gRoadDecalActiveVertices);
-        DrawVertexBuffer(device, gRoadDecalPreviewVertices);
-        DrawVertexBuffer(device, gRoadDecalGridVertices);
-    }
-
-    device->Release();
+    gWorldDraw = nullptr;
 }
 
 void SetRoadDecalActiveStroke(const RoadMarkupStroke* stroke)
 {
+    const UploadOnExit upload{RoadDecalLayer::Active};
     gRoadDecalActiveVertices.clear();
     if (stroke) {
         BuildStrokeVertices(*stroke, gRoadDecalActiveVertices);
@@ -1355,6 +1238,7 @@ void SetRoadDecalActiveStroke(const RoadMarkupStroke* stroke)
 
 void SetRoadDecalPreviewSegment(bool enabled, const RoadMarkupStroke& stroke)
 {
+    const UploadOnExit upload{RoadDecalLayer::Preview};
     gRoadDecalPreviewVertices.clear();
     if (enabled) {
         BuildStrokeVertices(stroke, gRoadDecalPreviewVertices);
@@ -1363,6 +1247,7 @@ void SetRoadDecalPreviewSegment(bool enabled, const RoadMarkupStroke& stroke)
 
 void SetRoadDecalSelectedStroke(const RoadMarkupStroke* stroke)
 {
+    const UploadOnExit upload{RoadDecalLayer::Selection};
     gRoadDecalSelectionVertices.clear();
     if (!stroke) {
         return;
@@ -1379,6 +1264,7 @@ void SetRoadDecalSelectedStroke(const RoadMarkupStroke* stroke)
 
 void SetRoadDecalGridPreview(bool enabled, const RoadDecalPoint& centerPoint)
 {
+    const UploadOnExit upload{RoadDecalLayer::Grid};
     gRoadDecalGridVertices.clear();
     if (!enabled) {
         return;
@@ -1644,7 +1530,7 @@ namespace
         }
 
         const auto& props = FindProps(stroke.type);
-        const DWORD color = ApplyOpacity(stroke.color != 0 ? stroke.color : props.defaultColor, stroke.opacity);
+        const uint32_t color = ApplyOpacity(stroke.color != 0 ? stroke.color : props.defaultColor, stroke.opacity);
         const float dashLength = std::max(0.05f, stroke.dashLength);
         const float gapLength = std::max(0.0f, stroke.gapLength);
 
@@ -1737,22 +1623,6 @@ namespace
         case RoadMarkupCategory::ZoneMarking:
         case RoadMarkupCategory::TextLabel:
             break;
-        }
-    }
-
-    void DrawVertexBuffer(IDirect3DDevice7* device, const std::vector<RoadDecalVertex>& verts)
-    {
-        if (verts.empty()) {
-            return;
-        }
-
-        const HRESULT hr = device->DrawPrimitive(D3DPT_TRIANGLELIST,
-                                                 D3DFVF_XYZ | D3DFVF_DIFFUSE,
-                                                 const_cast<RoadDecalVertex*>(verts.data()),
-                                                 static_cast<DWORD>(verts.size()),
-                                                 D3DDP_WAIT);
-        if (FAILED(hr)) {
-            LOG_WARN("RoadMarkup: DrawPrimitive failed hr=0x{:08X}", static_cast<uint32_t>(hr));
         }
     }
 

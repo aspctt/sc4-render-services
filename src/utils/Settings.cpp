@@ -35,8 +35,10 @@ namespace {
     constexpr float kDefaultTerrainDecalShadowRecoveryOpacityScale = 0.25f;
     constexpr float kMinTerrainDecalShadowRecoveryOpacityScale = 0.0f;
     constexpr float kMaxTerrainDecalShadowRecoveryOpacityScale = 1.0f;
+    constexpr bool kDefaultTerrainDecalShadowRecoveryUseStencil = true;
 
     const std::string kDefaultTheme = "dark";
+    const std::string kDefaultLayoutFile = "SC4RenderServices_layout.ini";
     const std::string kSectionName = "SC4RenderServices";
 
     std::string ToLower(const std::string& value) {
@@ -117,6 +119,7 @@ Settings::Settings()
     , theme_(kDefaultTheme)
     , keyboardNav_(kDefaultKeyboardNav)
     , uiScale_(kDefaultUIScale)
+    , layoutFile_(kDefaultLayoutFile)
     , showDemoPanel_(kDefaultShowDemoPanel)
     , enableImGuiService_(kDefaultEnableImGuiService)
     , enableS3DCameraService_(kDefaultEnableS3DCameraService)
@@ -124,7 +127,8 @@ Settings::Settings()
     , enableTerrainDecalService_(kDefaultEnableTerrainDecalService)
     , enableCustomTerrainDecalRenderer_(kDefaultEnableCustomTerrainDecalRenderer)
     , terrainDecalCustomDefaultDepthOffset_(kDefaultTerrainDecalCustomDefaultDepthOffset)
-    , terrainDecalShadowRecoveryOpacityScale_(kDefaultTerrainDecalShadowRecoveryOpacityScale) {}
+    , terrainDecalShadowRecoveryOpacityScale_(kDefaultTerrainDecalShadowRecoveryOpacityScale)
+    , terrainDecalShadowRecoveryUseStencil_(kDefaultTerrainDecalShadowRecoveryUseStencil) {}
 
 void Settings::Load(const std::filesystem::path& settingsFilePath) {
     // Reset to defaults
@@ -188,6 +192,11 @@ void Settings::Load(const std::filesystem::path& settingsFilePath) {
         // FontFile
         if (section.has("FontFile")) {
             fontFile_ = section.get("FontFile");
+        }
+
+        // LayoutFile (empty disables saving the ImGui window/docking layout)
+        if (section.has("LayoutFile")) {
+            layoutFile_ = section.get("LayoutFile");
         }
 
         // FontOversample
@@ -354,6 +363,18 @@ void Settings::Load(const std::filesystem::path& settingsFilePath) {
                 }
             }
         }
+
+        // TerrainDecalShadowRecoveryUseStencil
+        if (section.has("TerrainDecalShadowRecoveryUseStencil")) {
+            bool valid = false;
+            const std::string text = section.get("TerrainDecalShadowRecoveryUseStencil");
+            terrainDecalShadowRecoveryUseStencil_ = ParseBool(text, valid);
+            if (!valid) {
+                terrainDecalShadowRecoveryUseStencil_ = kDefaultTerrainDecalShadowRecoveryUseStencil;
+                LOG_ERROR("Invalid TerrainDecalShadowRecoveryUseStencil value '{}' in {}. Using default true.",
+                          text, settingsFilePath.string());
+            }
+        }
     }
     catch (const std::exception& e) {
         LOG_ERROR("Error reading settings file {}: {}", settingsFilePath.string(), e.what());
@@ -365,6 +386,7 @@ spdlog::level::level_enum Settings::GetLogLevel() const noexcept { return logLev
 bool Settings::GetLogToFile() const noexcept { return logToFile_; }
 float Settings::GetFontSize() const noexcept { return fontSize_; }
 std::string Settings::GetFontFile() const noexcept { return fontFile_; }
+std::string Settings::GetLayoutFile() const noexcept { return layoutFile_; }
 int Settings::GetFontOversample() const noexcept { return fontOversample_; }
 std::string Settings::GetTheme() const noexcept { return theme_; }
 bool Settings::GetKeyboardNav() const noexcept { return keyboardNav_; }
@@ -377,3 +399,4 @@ bool Settings::GetEnableTerrainDecalService() const noexcept { return enableTerr
 bool Settings::GetEnableCustomTerrainDecalRenderer() const noexcept { return enableCustomTerrainDecalRenderer_; }
 int Settings::GetTerrainDecalCustomDefaultDepthOffset() const noexcept { return terrainDecalCustomDefaultDepthOffset_; }
 float Settings::GetTerrainDecalShadowRecoveryOpacityScale() const noexcept { return terrainDecalShadowRecoveryOpacityScale_; }
+bool Settings::GetTerrainDecalShadowRecoveryUseStencil() const noexcept { return terrainDecalShadowRecoveryUseStencil_; }

@@ -1,7 +1,6 @@
 #pragma once
 
 #include <atomic>
-#include <d3d.h>
 #include <imgui.h>
 #include <mutex>
 #include <new>
@@ -13,11 +12,21 @@
 #include <Windows.h>
 
 #include "cRZBaseSystemService.h"
-#include "DX7InterfaceHook.h"
+#include "GraphicsDriverIdentification.h"
 #include "public/cIGZImGuiService.h"
 
-// Forward declaration
-struct IDirectDrawSurface7;
+class cIGZGDriver;
+
+struct ImGuiInitSettings
+{
+    float fontSize = 13.0f;
+    std::string fontFile;           // Empty = use built-in ProggyVector
+    int fontOversample = 2;
+    std::string theme = "dark";     // dark, light, classic
+    bool keyboardNav = true;
+    float uiScale = 1.0f;
+    std::string layoutFile;         // Absolute path of the ImGui layout .ini. Empty means it is not saved.
+};
 
 // ReSharper disable once CppPolymorphicClassWithNonVirtualPublicDestructor
 class ImGuiService final : public cRZBaseSystemService, public cIGZImGuiService
@@ -58,6 +67,8 @@ public:
     bool UnregisterFont(uint32_t fontId) override;
     [[nodiscard]] void* GetFont(uint32_t fontId) const override;
 
+    bool GetActiveDriverInfo(SC4GraphicsDriverInfo& out) const override;
+
     template <typename Fn>
     bool QueueRenderLambda(Fn&& fn) {
         using FnType = std::decay_t<Fn>;
@@ -96,20 +107,18 @@ private:
         uint32_t height;
         uint32_t creationGeneration;
         std::vector<uint8_t> sourceData;       // RGBA32 pixel data for recreation
-        IDirectDrawSurface7* surface;          // Can be nullptr if device lost
+        uint32_t driverTexture;                // cIGZGDriver texture name, 0 until created
         bool needsRecreation;
         bool pendingDestroy;
-        bool useSystemMemory;
 
         ManagedTexture()
             : id(0)
             , width(0)
             , height(0)
             , creationGeneration(0)
-            , surface(nullptr)
+            , driverTexture(0)
             , needsRecreation(false)
-            , pendingDestroy(false)
-            , useSystemMemory(false) {}
+            , pendingDestroy(false) {}
     };
 
     struct RenderQueueItem
@@ -129,9 +138,22 @@ private:
         delete static_cast<FnType*>(data);
     }
 
-    static void RenderFrameThunk_(IDirect3DDevice7* device);
-    void RenderFrame_(IDirect3DDevice7* device);
+    // Replaces the game's per-frame cIGZGDriver::Flush call in cGZGraphicSystem::Draw: draws
+    // ImGui over the finished frame, then presents it.
+    static void __fastcall FlushHook_(cIGZGDriver* driver);
+    void RenderOverlay_(cIGZGDriver* driver);
+    // Builds one ImGui frame from the registered panels and the render queue. Returns false
+    // when no frame was built, in which case there is nothing to render.
+    bool BuildFrame_();
+    void ResyncGameStateCache_();
+    // Identifies the driver once per driver object and logs it.
+    const IdentifiedGraphicsDriver& IdentifyDriver_(cIGZGDriver* driver) const;
+    bool InstallFlushHook_();
+    void RemoveFlushHook_();
     bool EnsureInitialized_();
+    bool CreateContext_(HWND hwnd);
+    void DestroyContext_();
+    void CaptureD3DX_();
     void InitializePanels_();
     void ProcessPendingFontRegistrations_();
     void ProcessPendingTextureReleases_();
@@ -141,10 +163,10 @@ private:
     static LRESULT CALLBACK WndProcHook(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam);
 
     // Texture management helpers
-    bool RebuildFontAtlas_();
-    bool CreateSurfaceForTexture_(ManagedTexture& tex);
+    bool CreateDriverTexture_(ManagedTexture& tex);
+    void ReleaseDriverTexture_(ManagedTexture& tex);
     void OnDeviceLost_();
-    bool OnDeviceRestored_();
+    void OnDeviceRestored_();
     void InvalidateAllTextures_();
 
 private:
@@ -166,10 +188,15 @@ private:
     ImGuiInitSettings initSettings_;
     HWND gameWindow_;
     WNDPROC originalWndProc_;
-    IDirect3DDevice7* lastKnownDevice_;
-    IDirectDraw7* lastKnownDDraw_;
     std::atomic<bool> initialized_;
     std::atomic<bool> imguiInitialized_;
+    cIGZGDriver* rendererDriver_;
+    mutable cIGZGDriver* identifiedDriver_;
+    mutable IdentifiedGraphicsDriver driverInfo_;
+    bool rendererReady_;
+    bool rendererFailed_;
+    bool flushHookInstalled_;
+    bool inFrame_;  // Between the renderer's NewFrame and RenderDrawData: driver calls are safe.
     bool hookInstalled_;
     bool warnedNoDriver_;
     bool warnedMissingWindow_;

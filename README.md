@@ -1,40 +1,49 @@
 # sc4-render-services
 
-Render services and samples (ImGui, Draw, S3D Camera, Terrain Decals) for
-SimCity 4 DLL plugins using the gzcom-dll SDK.
+Render services and samples for SimCity 4 DLL plugins built on the gzcom-dll SDK: ImGui UI,
+drawing into the city, the S3D camera, draw pass hooks and terrain decals.
+
+Everything is drawn through the game's own graphics driver interface (`cIGZGDriver`), so
+plugins work the same whichever driver the game uses: its built-in DirectX driver, SCD3D11 or
+scvk.
 
 Simtropolis file download page: https://community.simtropolis.com/files/file/37423-sc4renderservices-dll/
 
 ![Screenshot](docs/assets/preview.jpg)
 
-## Build
+## Renderer support
 
-Prereqs:
-- CMake 4.0+
-- Visual Studio (Win32 toolchain)
+| Feature | Built-in DirectX | SCD3D11 | scvk |
+|---|---|---|---|
+| ImGui panels, docking, textures | yes | yes | yes |
+| World drawing (`cIGZWorldDrawService`) | yes | yes | yes |
+| Draw pass callbacks and draw context helpers | yes | yes | yes |
+| S3D camera service | yes | yes | yes |
+| Terrain decal service | yes | yes | yes |
+| Terrain decal shadow recovery | yes | yes (stencil) | yes (overlaps darker) |
+| Raw DirectX 7 access (`AcquireD3DInterfaces`) | yes | no | no |
 
-Steps (from repo root):
-```
-cmake -S . -B cmake-build-debug-visual-studio -G "Visual Studio 17 2022"
-cmake --build cmake-build-debug-visual-studio --config Debug
-```
+`cIGZImGuiService::GetActiveDriverInfo` tells a plugin which driver is active.
 
 ## Installation
 
-1. Copy `imgui.dll` into your SimCity 4 **Apps** folder
-   (e.g. `C:\Program Files (x86)\SimCity 4 Deluxe Edition\Apps\`).
-2. Copy `SC4RenderServices.dll` and `SC4RenderServices.ini` into your
-   **Plugins** folder
+1. Copy `SC4RenderServices.dll` and `SC4RenderServices.ini` into your **Plugins** folder
    (e.g. `Documents\SimCity 4\Plugins\`).
-3. (Optional) Copy any sample DLLs you want into the same **Plugins** folder.
-4. Edit `SC4RenderServices.ini` to customise logging, appearance, and which
-   services are loaded. See [Configuration](#configuration) below.
+2. (Optional) Copy any sample DLLs you want into the same **Plugins** folder.
+3. Edit `SC4RenderServices.ini` to customise logging, appearance, and which services are
+   loaded. See [Configuration](#configuration) below.
+
+Older versions also installed `imgui.dll` in the game's **Apps** folder. ImGui is now built into
+`SC4RenderServices.dll`, so that file is no longer used. Delete it once every plugin you use
+that depends on SC4RenderServices has been updated: plugins built for the old version still
+need it to load, and they get no ImGui service from this version either way.
+
+The services require SimCity 4 version `1.1.641`.
 
 ## Configuration
 
-`SC4RenderServices.ini` must sit next to `SC4RenderServices.dll` in the
-Plugins folder. All settings are optional; if the file is missing or a key
-is absent the default value is used.
+`SC4RenderServices.ini` must sit next to `SC4RenderServices.dll` in the Plugins folder. All
+settings are optional. If the file is missing or a key is absent, the default value is used.
 
 ```ini
 [SC4RenderServices]
@@ -64,11 +73,16 @@ KeyboardNav=true
 ; Global UI scale factor. Valid range: 0.5 - 3.0
 UIScale=1.0
 
+; File that stores ImGui window positions and the docking layout (relative to DLL folder).
+; Leave empty to not save the layout between sessions.
+LayoutFile=SC4RenderServices_layout.ini
+
 ; Show a built-in status panel and the Dear ImGui demo window on startup.
 ; Useful for verifying that the service installed correctly.
 ShowDemoPanel=false
 
 ; Enable or disable individual services.
+; The world draw service is part of the draw service and follows EnableDrawService.
 EnableImGuiService=true
 EnableS3DCameraService=true
 EnableDrawService=true
@@ -83,49 +97,108 @@ EnableCustomTerrainDecalRenderer=true
 TerrainDecalCustomDefaultDepthOffset=2
 
 ; Opacity scale for the post-shadow terrain decal recovery redraw.
-; Lower values blend more softly with shadows. Valid range: 0.0 - 1.0.
+; Lower values blend more softly with shadows. 0 turns the redraw off. Valid range: 0.0 - 1.0.
 TerrainDecalShadowRecoveryOpacityScale=0.25
+
+; Draws the shadow recovery redraw once per pixel, from the topmost decal, using the
+; stencil buffer, so overlapping decals do not come out darker. Used with graphics drivers
+; that have a stencil buffer, such as SCD3D11. The game's built-in DirectX driver keeps its
+; own method. Set to false to draw every decal again instead.
+TerrainDecalShadowRecoveryUseStencil=true
 ```
+
+## Build
+
+Prereqs:
+- CMake 4.0+
+- Visual Studio 2022 (Win32 toolchain, SimCity 4 only loads 32-bit DLLs)
+- Submodules: `git submodule update --init --recursive`
+
+With the presets:
+```
+cmake --preset vs2022-win32-release
+cmake --build --preset vs2022-win32-release-all
+```
+
+Or by hand:
+```
+cmake -S . -B cmake-build-debug-visual-studio -G "Visual Studio 17 2022" -A Win32 -DCMAKE_BUILD_TYPE=Debug
+cmake --build cmake-build-debug-visual-studio --config Debug
+```
+
+Pass `-DCMAKE_BUILD_TYPE=Debug` for a Debug build: it picks the matching debug C runtime.
+Only `SC4RenderServices.dll` is built by default. Add `-DSC4RS_BUILD_SAMPLES=ON` to build the
+sample DLLs too.
+When the build finds SimCity 4 it copies the DLLs into your Plugins folder. Set the `CI`
+environment variable to turn that off.
+
+### As a dependency
+
+A plugin can add this repository with `add_subdirectory`. Pass `EXCLUDE_FROM_ALL` so only what
+the plugin links gets built, and link the exported ImGui with `sc4rs_use_imgui`:
+```cmake
+add_subdirectory(vendor/sc4-render-services EXCLUDE_FROM_ALL)
+sc4rs_use_imgui(MyPlugin)
+```
+As a subproject it leaves the generator platform to the parent, never builds the samples, and
+does not deploy to the Plugins folder. It reuses the parent's `spdlog` or `spdlog::spdlog` target
+and its `gzcom2` or `gzcom_dll` target when those exist, so that gzcom-dll must be at least as new
+as the one in `vendor/gzcom-dll`.
 
 ## Outputs
 
-Required:
-- `imgui.dll` (deployed to `...\SimCity 4 Deluxe Edition\Apps`)
-- `SC4RenderServices.dll` (deployed to `...\Documents\SimCity 4\Plugins\`)
-- `SC4RenderServices.ini` (deployed to `...\Documents\SimCity 4\Plugins\`)
+Required (deployed to `...\Documents\SimCity 4\Plugins\`):
+- `SC4RenderServices.dll`
+- `SC4RenderServices.ini`
 
-Optional samples (deployed to `...\Documents\SimCity 4\Plugins\`):
+Optional samples (built with `-DSC4RS_BUILD_SAMPLES=ON`, deployed to `...\Documents\SimCity 4\Plugins\`):
 - `SC4ImGuiSample.dll` (basic panel)
 - `SC4ImGuiSampleCity.dll` (city-view only)
 - `SC4ImGuiSampleDemo.dll` (ImGui demo window)
 - `SC4ImGuiTextureSample.dll` (texture management example)
-- `SC4WorldProjectionSample.dll` (world projection helpers)
+- `SC4WorldDrawSample.dll` (every world drawing feature)
+- `SC4RoadDecalSample.dll` (road marking tool on world draw layers)
+- `SC4WorldProjectionSample.dll` (world projection helpers, depth readback on the built-in
+  DirectX driver only)
 - `SC4S3DCameraDebugSample.dll` (camera debug tooling)
 - `SC4OverlayManagerSample.dll` (overlay manager example)
 - `SC4DrawServiceSample.dll` (draw service UI + hooks)
-- `SC4RoadDecalSample.dll` (road decal rendering)
 - `SC4TerrainDecalSample.dll` (terrain decal editor and API sample)
+- `SC4CameraViewInputSample.dll` (camera view input control)
+- `SC4DateJumperSample.dll` (date jumper panel)
 
 ## Provided Services
 
-`SC4RenderServices.dll` registers four services (currently gated for SimCity 4
-version `1.1.641`).
+`SC4RenderServices.dll` registers five services, all gated on SimCity 4 version `1.1.641`.
 
 Detailed reference: [docs/services.md](docs/services.md)
 
-Terrain decal guide: [docs/terrain-decals.md](docs/terrain-decals.md)
+Guides:
+- World drawing: [docs/world-drawing.md](docs/world-drawing.md)
+- Terrain decals: [docs/terrain-decals.md](docs/terrain-decals.md)
+- Updating a plugin from the `imgui.dll` version: [docs/migrating.md](docs/migrating.md)
 
 ### 1) ImGui service
 
 - Service ID / IID: `kImGuiServiceID`, `GZIID_cIGZImGuiService`
   (`src/public/ImGuiServiceIds.h`)
 - Interface: `cIGZImGuiService` (`src/public/cIGZImGuiService.h`)
-- Provides panel registration, per-frame callbacks, font registration, DX7
-  access, and managed texture APIs for `ImGui::Image()`.
+- Provides panel registration, per-frame callbacks, font registration, managed textures for
+  `ImGui::Image()`, and which graphics driver is active. ImGui is the docking branch.
 - Examples: `SC4ImGuiSample.dll`, `SC4ImGuiSampleDemo.dll`,
   `SC4ImGuiTextureSample.dll`, `SC4ImGuiSampleCity.dll`
 
-### 2) S3D camera service
+### 2) World draw service
+
+- Service ID / IID: `kWorldDrawServiceID`, `GZIID_cIGZWorldDrawService`
+  (`src/public/cIGZWorldDrawService.h`)
+- Interface: `cIGZWorldDrawService`, plus the header-only `SC4WorldMeshBuilder`
+  (`src/public/SC4WorldMeshBuilder.h`)
+- Draws shapes, lines and textures into the 3D city: layers that SC4RenderServices draws every
+  frame, and per-frame draw callbacks. Also picks terrain under the mouse.
+- Examples: `SC4WorldDrawSample.dll`, `SC4RoadDecalSample.dll`
+
+### 3) S3D camera service
 
 - Service ID / IID: `kS3DCameraServiceID`, `GZIID_cIGZS3DCameraService`
   (`src/public/S3DCameraServiceIds.h`)
@@ -134,17 +207,18 @@ Terrain decal guide: [docs/terrain-decals.md](docs/terrain-decals.md)
   and transform operations.
 - Examples: `SC4WorldProjectionSample.dll`, `SC4S3DCameraDebugSample.dll`
 
-### 3) Draw service
+### 4) Draw service
 
 - Service ID / IID: `kDrawServiceID`, `GZIID_cIGZDrawService`
   (`src/public/cIGZDrawService.h`)
 - Interface: `cIGZDrawService` (`src/public/cIGZDrawService.h`)
 - Provides draw-context wrapping, render-pass callbacks
   (`PreStatic`...`PostDynamic`), and helpers for render state, mesh/model draw
-  calls, and primitive drawing.
-- Examples: `SC4DrawServiceSample.dll`, `SC4RoadDecalSample.dll`
+  calls, and primitive drawing. For drawing your own shapes, the world draw service is
+  simpler and handles the render state for you.
+- Example: `SC4DrawServiceSample.dll`
 
-### 4) Terrain decal service
+### 5) Terrain decal service
 
 - Service ID / IID: `kTerrainDecalServiceID`,
   `GZIID_cIGZTerrainDecalService`
@@ -158,16 +232,27 @@ Terrain decal guide: [docs/terrain-decals.md](docs/terrain-decals.md)
 
 ## Usage
 
-- Link your DLL against `imgui.dll` and include `vendor/d3d7imgui/ImGui/imgui.h`.
-- Query the service via `cIGZFrameWork::GetSystemService` with `kImGuiServiceID`
-  and `GZIID_cIGZImGuiService` from `src/public/ImGuiServiceIds.h`.
+- Query a service via `cIGZFrameWork::GetSystemService` with its service ID and IID. The
+  returned interface is AddRef'd, so `Release()` it when done.
+- To use ImGui, include `vendor/imgui/imgui.h` and link the ImGui that
+  `SC4RenderServices.dll` exports. In this repository, `sc4rs_use_imgui(target)` in
+  `CMakeLists.txt` does everything. A plugin in its own repository needs the same four
+  things:
+  - define `IMGUI_USER_CONFIG="ImGuiUserConfig.h"` and `IMGUI_DLL_IMPORT`, with `src/public`
+    on the include path
+  - link `SC4RenderServices.lib` and `delayimp.lib`
+  - link with `/DELAYLOAD:SC4RenderServices.dll`
+  - compile `src/public/SC4RenderServicesDelayLoad.cpp` into the plugin
+
+  Delay loading makes the plugin independent of the order the game loads DLLs in. Only call
+  ImGui once you hold the ImGui service.
 - Register a panel with `ImGuiPanelDesc` and render using `ImGui::*`.
-- The service owns the ImGui context; do not call `ImGui::CreateContext()` or
+- The service owns the ImGui context. Do not call `ImGui::CreateContext()` or
   `ImGui::DestroyContext()` in clients.
 
 ## Render Callbacks
 
-Two callback models are available:
+Four callback models are available:
 
 - `cIGZImGuiService` panel callbacks (`on_init`, `on_update`, `on_render`,
   `on_visible_changed`, `on_shutdown`, `on_unregister`, `on_device_lost`,
@@ -175,7 +260,9 @@ Two callback models are available:
 - `cIGZImGuiService::QueueRender(...)` for one-shot work on the next ImGui
   frame. The optional cleanup callback runs after execution (or during
   shutdown if still queued).
-- `cIGZDrawService::RegisterDrawPassCallback(...)` for renderer pass hooks.
+- `cIGZWorldDrawService::RegisterDrawCallback(...)` to draw into the city at the end of a
+  pass every frame. See [docs/world-drawing.md](docs/world-drawing.md).
+- `cIGZDrawService::RegisterDrawPassCallback(...)` for raw renderer pass hooks.
   Callback signature is `void(DrawServicePass pass, bool begin, void* userData)`.
   The callback is invoked twice per pass: before the game pass (`begin=true`)
   and after it (`begin=false`).
@@ -200,9 +287,13 @@ if (drawService->RegisterDrawPassCallback(DrawServicePass::Dynamic,
 
 Client-facing headers live under `src/public`:
 
-- `src/public/cIGZImGuiService.h` (service interface + `ImGuiPanelDesc`)
-- `src/public/ImGuiServiceIds.h` (service IDs and API version)
-- `src/public/ImGuiPanel.h` and `src/public/ImGuiPanelAdapter.h` (optional class-style adapter)
+- `cIGZImGuiService.h` (service interface + `ImGuiPanelDesc`) and `ImGuiServiceIds.h`
+- `ImGuiPanel.h` and `ImGuiPanelAdapter.h` (optional class-style adapter)
+- `ImGuiTexture.h` (RAII texture wrapper)
+- `GraphicsDriverInfo.h` (which graphics driver is active)
+- `cIGZWorldDrawService.h` and `SC4WorldMeshBuilder.h` (world drawing)
+- `cIGZDrawService.h`, `cIGZS3DCameraService.h`, `cIGZTerrainDecalService.h` and their ID
+  headers
 
 Class-based usage (optional):
 ```cpp
@@ -261,15 +352,17 @@ void RegisterPanel(cIGZFrameWork* fw) {
 
 ### Safe Texture Management
 
-The service provides a comprehensive texture management API that handles device loss, memory management, and automatic recreation. This is the **recommended** way to create textures for use with `ImGui::Image()`.
+The service creates textures through the active graphics driver and keeps a copy of the pixels,
+so it can recreate them when the driver loses them. This is the **recommended** way to create
+textures for `ImGui::Image()` and for textured world drawing.
 
 #### Features
 
-- **Automatic device loss handling**: Textures survive Alt+Tab and resolution changes
-- **Generation tracking**: Old texture handles are automatically invalidated after device reset
-- **Memory safety**: Source pixel data is stored for automatic recreation
-- **Fallback support**: Automatically falls back to system memory if video memory is exhausted
-- **RAII wrapper**: Optional `ImGuiTexture` class for automatic lifetime management
+- **Device loss handling**: textures are recreated after Alt+Tab, a resolution change or a new
+  driver object
+- **Generation tracking**: old texture handles are invalidated after a device reset
+- **Memory safety**: source pixel data is stored for automatic recreation
+- **RAII wrapper**: optional `ImGuiTexture` class for automatic lifetime management
 
 #### Basic Usage (RAII Wrapper - Recommended)
 
@@ -279,18 +372,18 @@ The service provides a comprehensive texture management API that handles device 
 class MyPanel {
     cIGZImGuiService* service_;
     ImGuiTexture myTexture_;
-    
+
     void OnInit() {
         // Generate RGBA32 pixel data (4 bytes per pixel)
         std::vector<uint8_t> pixels(128 * 128 * 4);
         // ... fill pixel data ...
-        
+
         // Create texture - automatically manages lifetime
         if (!myTexture_.Create(service_, 128, 128, pixels.data())) {
             // Handle error
         }
     }
-    
+
     void OnRender() {
         // Get texture ID - returns nullptr if device was lost
         void* texId = myTexture_.GetID();
@@ -300,7 +393,7 @@ class MyPanel {
             ImGui::TextUnformatted("Texture unavailable");
         }
     }
-    
+
     // Texture is automatically released in destructor
 };
 ```
@@ -310,12 +403,10 @@ class MyPanel {
 ```cpp
 #include "public/cIGZImGuiService.h"
 
-// Create texture descriptor
 ImGuiTextureDesc desc{};
 desc.width = 128;
 desc.height = 128;
 desc.pixels = myRGBA32Data;  // Must remain valid during call
-desc.useSystemMemory = false;  // Prefer video memory
 
 // Create texture - service stores pixel data internally
 ImGuiTextureHandle handle = service->CreateTexture(desc);
@@ -333,80 +424,84 @@ if (texId) {
 service->ReleaseTexture(handle);
 ```
 
+`GetTextureID` returns the driver's texture name cast to `void*`. Treat it as an opaque
+`ImTextureID`. `ImGuiTextureDesc::useSystemMemory` is ignored: the driver decides where the
+texture lives.
+
 #### Device Generation Pattern
 
-When the DirectX device is reset (Alt+Tab, resolution change), the device generation increments. Old texture handles become invalid:
+When the graphics device is reset, the device generation increments and old texture handles
+become invalid:
 
 ```cpp
 void OnRender() {
     static uint32_t lastGen = 0;
     uint32_t currentGen = service->GetDeviceGeneration();
-    
+
     if (currentGen != lastGen) {
         // Device was reset - recreate textures
         RecreateMyTextures();
         lastGen = currentGen;
     }
-    
+
     // Use textures normally...
 }
 ```
 
-The `ImGuiTexture` RAII wrapper handles this automatically by returning `nullptr` from `GetID()` when generation changes.
+The `ImGuiTexture` RAII wrapper handles this automatically by returning `nullptr` from
+`GetID()` when generation changes.
 
 #### Safety Notes
 
 - **Always check return values**: `GetTextureID()` can return `nullptr` if device is lost
-- **Store source data**: The service keeps a copy, but you may want to keep your own for modification
 - **RGBA32 format**: Pixel data must be in RGBA32 format (4 bytes per pixel: R, G, B, A)
-- **Thread safety**: Not thread-safe - call from render thread only
+- **Thread safety**: Not thread-safe - call from the game's main thread only
 - **Lifetime**: Release textures before unregistering panels or shutting down
-- **Generation mismatch**: Handles from old device generations return `nullptr` from `GetTextureID()`
-
-#### Performance Considerations
-
-- **Video memory preferred**: Set `useSystemMemory = false` for better performance (default)
-- **Automatic fallback**: Service falls back to system memory if video memory is exhausted
-- **On-demand recreation**: Surfaces are recreated lazily when first accessed after device loss
-- **Minimal overhead**: Device loss detection uses existing cooperative level checks
+- **Generation mismatch**: Handles from old device generations return `nullptr` from
+  `GetTextureID()`
 
 #### Error Handling
 
-The API is designed to fail gracefully:
-
 ```cpp
-// Creation can fail - check handle
 ImGuiTextureHandle handle = service->CreateTexture(desc);
 if (handle.id == 0) {
     LOG_ERROR("Texture creation failed");
     return;
 }
 
-// GetTextureID returns nullptr on failure
 void* texId = service->GetTextureID(handle);
 if (!texId) {
-    // Device lost, generation mismatch, or surface recreation failed
-    // Check IsTextureValid() to distinguish:
+    // Device lost, generation mismatch, or recreation failed.
     if (!service->IsTextureValid(handle)) {
-        // Handle is stale (generation mismatch)
-        // Need to create new texture
+        // Handle is stale (generation mismatch): create a new texture
     }
 }
 ```
 
 See `src/sample/ImGuiTextureSample.cpp` for a complete working example.
 
+### Graphics driver info
+
+```cpp
+SC4GraphicsDriverInfo driver{};
+if (service->GetActiveDriverInfo(driver)) {
+    // driver.kind: BuiltInDirectX, BuiltInOpenGL, SCD3D11, Scvk or Unknown
+    // driver.name: a display name, driver.modulePath: the DLL that implements it
+}
+```
+
+The game's driver class ID cannot tell drivers apart (SCD3D11 reports the built-in DirectX
+ID, scvk the OpenGL one), so the service identifies the driver by the module that implements it.
+
 ### DX7 interface access
 
-**Note**: For texture creation, prefer using the [Safe Texture Management API](#safe-texture-management) instead of manually managing DirectDraw surfaces. The texture API handles device loss automatically.
+`cIGZImGuiService::AcquireD3DInterfaces` hands out the built-in DirectX driver's
+`IDirect3DDevice7` and `IDirectDraw7`. It returns false with any other driver, so treat it as
+an optional extra and prefer the world draw service and the texture API, which work everywhere.
 
-If you need DirectX 7 interfaces for advanced use cases, use `cIGZImGuiService::AcquireD3DInterfaces`. The service AddRef()s both
-interfaces; callers must Release() them when done. Prefer acquiring per
-operation/frame rather than caching across frames. Use
-`IsDeviceReady()` and `GetDeviceGeneration()` to detect when cached resources
-must be recreated.
+The service AddRef()s both interfaces and callers must Release() them. Acquire them per
+operation rather than caching them across frames.
 
-Example:
 ```cpp
 IDirect3DDevice7* d3d = nullptr;
 IDirectDraw7* dd = nullptr;
@@ -419,20 +514,16 @@ if (service->AcquireD3DInterfaces(&d3d, &dd)) {
 
 ## Developer notes
 
-- The service is a `cIGZSystemService` registered on `OnStart`, and it is added to
-  the tick list via `cIGZFrameWork::AddToTick`. Rendering is driven from the
-  DX7 EndScene hook once the D3D interface is available. For more info on Services, 
-  see their [gzcom-dll Wiki entry](https://github.com/nsgomez/gzcom-dll/wiki/Service).
+- The services are `cIGZSystemService`s registered on `OnStart`. ImGui draws once per frame
+  from a hook on the game's per-frame `cIGZGDriver::Flush` call in `cGZGraphicSystem::Draw`, so
+  it does not appear in region thumbnails or photos. For more info on Services, see their
+  [gzcom-dll Wiki entry](https://github.com/nsgomez/gzcom-dll/wiki/Service).
 - Panels are registered with a unique `id` and a simple `on_render(void* data)`
   callback. Use the `data` pointer for per-panel state instead of globals.
 - The ImGui context is owned by the service. Clients should not call
   `ImGui::CreateContext()` or `ImGui::DestroyContext()`. If you need to check
   readiness, call `cIGZImGuiService::GetContext()`.
 - Use the `visible` flag in `ImGuiPanelDesc` to control initial visibility.
-
-## Notes
-
-- `imgui.dll` must live in the SC4 `Apps` folder to be loaded as a dependency.
-- The service owns the ImGui context and backend initialization. Clients do not
-  need to call `ImGui::CreateContext()` or `ImGui::DestroyContext()` or worry about hooking into
-  the DirectX7 etc.
+- Reverse engineering notes for the driver backend are in
+  [docs/generic-backend-re.md](docs/generic-backend-re.md) and
+  [docs/world-draw-design.md](docs/world-draw-design.md).

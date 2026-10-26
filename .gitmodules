@@ -1,12 +1,12 @@
 [submodule "vendor/gzcom-dll"]
 	path = vendor/gzcom-dll
 	url = https://github.com/nsgomez/gzcom-dll.git
-[submodule "vendor/d3d7imgui"]
-    path = vendor/d3d7imgui
-    url = https://github.com/caspervg/D3D7Imgui.git
 [submodule "vendor/spdlog"]
 	path = vendor/spdlog
 	url = https://github.com/gabime/spdlog.git
 [submodule "vendor/mINI"]
 	path = vendor/mINI
 	url = https://github.com/metayeti/mINI.git
+[submodule "vendor/imgui"]
+	path = vendor/imgui
+	url = https://github.com/ocornut/imgui.git

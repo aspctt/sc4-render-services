@@ -4,7 +4,7 @@
 #include "imgui.h"
 #include "public/ImGuiPanelAdapter.h"
 #include "public/ImGuiServiceIds.h"
-#include "public/cIGZDrawService.h"
+#include "public/cIGZWorldDrawService.h"
 #include "public/cIGZImGuiService.h"
 #include "sample/road-decal/RoadDecalData.hpp"
 #include "sample/road-decal/RoadDecalInputControl.hpp"
@@ -132,14 +132,6 @@ namespace
             gRoadDecalTool->Release();
             gRoadDecalTool = nullptr;
         }
-    }
-
-    void DrawPassRoadDecalCallback(DrawServicePass pass, bool begin, void*)
-    {
-        if (pass != DrawServicePass::PreDynamic || begin) {
-            return;
-        }
-        DrawRoadDecals();
     }
 
     void DrawTypeButtons(RoadMarkupCategory category)
@@ -434,8 +426,6 @@ namespace
     };
 }
 
-extern std::atomic<cIGZImGuiService*> gImGuiServiceForD3DOverlay;
-
 class RoadDecalSampleDirector final : public cRZCOMDllDirector
 {
 public:
@@ -476,35 +466,27 @@ public:
             return true;
         }
         panelRegistered_ = true;
-        gImGuiServiceForD3DOverlay.store(imguiService_, std::memory_order_release);
 
-        if (!mpFrameWork->GetSystemService(kDrawServiceID,
-                                           GZIID_cIGZDrawService,
-                                           reinterpret_cast<void**>(&drawService_))) {
-            LOG_WARN("RoadMarkup: Draw service not available");
+        if (!mpFrameWork->GetSystemService(kWorldDrawServiceID,
+                                           GZIID_cIGZWorldDrawService,
+                                           reinterpret_cast<void**>(&worldDrawService_))) {
+            LOG_WARN("RoadMarkup: the world draw service is not available, markings will not be shown. "
+                     "Update SC4RenderServices.dll to draw them.");
             return true;
         }
-
-        drawService_->RegisterDrawPassCallback(DrawServicePass::PreDynamic,
-                                               &DrawPassRoadDecalCallback,
-                                               nullptr,
-                                               &drawPassCallbackToken_);
+        InitRoadDecalRendering(worldDrawService_);
         return true;
     }
 
     bool PostAppShutdown() override
     {
-        if (drawService_) {
-            if (drawPassCallbackToken_ != 0) {
-                drawService_->UnregisterDrawPassCallback(drawPassCallbackToken_);
-                drawPassCallbackToken_ = 0;
-            }
-            drawService_->Release();
-            drawService_ = nullptr;
+        ShutdownRoadDecalRendering();
+        if (worldDrawService_) {
+            worldDrawService_->Release();
+            worldDrawService_ = nullptr;
         }
 
         DestroyRoadDecalTool();
-        gImGuiServiceForD3DOverlay.store(nullptr, std::memory_order_release);
 
         if (imguiService_) {
             imguiService_->UnregisterPanel(kRoadDecalPanelId);
@@ -517,8 +499,7 @@ public:
 
 private:
     cIGZImGuiService* imguiService_ = nullptr;
-    cIGZDrawService* drawService_ = nullptr;
-    uint32_t drawPassCallbackToken_ = 0;
+    cIGZWorldDrawService* worldDrawService_ = nullptr;
     bool panelRegistered_ = false;
 };
 

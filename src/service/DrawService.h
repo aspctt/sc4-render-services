@@ -66,7 +66,7 @@ public:
     void SetTexTransform4(SC4DrawContextHandle handle, void* transform4x4, int stage) override;
     void ClearTexTransform(SC4DrawContextHandle handle, int stage) override;
     void SetTexCoord(SC4DrawContextHandle handle, int texCoord, int stage) override;
-    void SetVertexBuffer(SC4DrawContextHandle handle) override;
+    void SetVertexBuffer(SC4DrawContextHandle handle, uint32_t vertexFormat, const void* vertices) override;
     void SetIndexBuffer(SC4DrawContextHandle handle, uint32_t indexBuffer, uint32_t indexFormat) override;
     void EnableBlendStateFlag(SC4DrawContextHandle handle, bool enabled) override;
     void EnableAlphaTestFlag(SC4DrawContextHandle handle, bool enabled) override;
@@ -78,7 +78,7 @@ public:
     void SetAlphaFunc(SC4DrawContextHandle handle, uint32_t alphaFunc, float alphaRef) override;
     void SetDepthFunc(SC4DrawContextHandle handle, uint32_t depthFunc) override;
     void SetDepthOffset(SC4DrawContextHandle handle, int depthOffset) override;
-    void SetTransparency(SC4DrawContextHandle handle) override;
+    void SetTransparency(SC4DrawContextHandle handle, float opacity) override;
     void ResetTransparency(SC4DrawContextHandle handle) override;
     bool GetLighting(SC4DrawContextHandle handle) override;
     void SetLighting(SC4DrawContextHandle handle, bool enableLighting) override;
@@ -88,11 +88,11 @@ public:
     void ShutdownContext(SC4DrawContextHandle handle) override;
 
     void DrawBoundingBox(SC4DrawContextHandle handle, float* bbox6, float r, float g, float b, float a) override;
-    void DrawPrims(SC4DrawContextHandle handle, uint32_t primType, uint32_t startVertex,
-                   uint32_t primitiveCount, uint32_t flags) override;
+    void DrawPrims(SC4DrawContextHandle handle, uint32_t primType, uint32_t vertexFormat,
+                   uint32_t vertexCount, const void* vertices) override;
     void DrawPrimsIndexed(SC4DrawContextHandle handle, uint8_t primType, long indexStart, long indexCount) override;
-    void DrawPrimsIndexedRaw(SC4DrawContextHandle handle, uint32_t primType, uint32_t indexBuffer,
-                             uint32_t indexCount, uint32_t flags) override;
+    void DrawPrimsIndexedRaw(SC4DrawContextHandle handle, uint32_t primType, uint32_t indexCount,
+                             const uint16_t* indices) override;
     void DrawRect(SC4DrawContextHandle handle, void* drawTarget, int* rect) override;
 
     // Lifecycle
@@ -178,7 +178,8 @@ private:
         void (__thiscall* setTexTransform4)(void* drawContext, void* transform4x4, int stage);
         void (__thiscall* clearTexTransform)(void* drawContext, int stage);
         void (__thiscall* setTexCoord)(void* drawContext, int texCoord, int stage);
-        void (__thiscall* setVertexBuffer)(void* drawContext);
+        // The game function zeroes the middle argument and jumps to InterleavedArrays.
+        void (__thiscall* setVertexBuffer)(void* drawContext, uint32_t vertexFormat, int32_t unused, const void* vertices);
         void (__thiscall* setIndexBuffer)(void* drawContext, uint32_t indexBuffer, uint32_t indexFormat);
         void (__thiscall* enableBlendStateFlag)(void* drawContext, char enabled);
         void (__thiscall* enableAlphaTestFlag)(void* drawContext, bool enabled);
@@ -190,7 +191,7 @@ private:
         void (__thiscall* setAlphaFunc)(void* drawContext, uint32_t alphaFunc, float alphaRef);
         void (__thiscall* setDepthFunc)(void* drawContext, uint32_t depthFunc);
         void (__thiscall* setDepthOffset)(void* drawContext, int depthOffset);
-        void (__thiscall* setTransparency)(void* drawContext);
+        void (__thiscall* setTransparency)(void* drawContext, float opacity);
         void (__thiscall* resetTransparency)(void* drawContext);
         uint8_t (__thiscall* getLighting)(void* drawContext);
         void (__thiscall* setLighting)(void* drawContext, bool enableLighting);
@@ -199,9 +200,9 @@ private:
         void (__thiscall* initContext)(void* drawContext);
         void (__thiscall* shutdownContext)(void* drawContext);
         void (__thiscall* drawBoundingBox)(void* drawContext, float* bbox, const void* color);
-        void (__thiscall* drawPrims)(void* drawContext, uint32_t primType, uint32_t startVertex, uint32_t primitiveCount, uint32_t flags);
+        void (__thiscall* drawPrims)(void* drawContext, uint32_t primType, uint32_t vertexFormat, uint32_t vertexCount, const void* vertices);
         void (__thiscall* drawPrimsIndexed)(void* drawContext, uint8_t primType, long indexStart, long indexCount);
-        void (__thiscall* drawPrimsIndexedRaw)(void* drawContext, uint32_t primType, uint32_t indexBuffer, uint32_t indexCount, uint32_t flags);
+        void (__thiscall* drawPrimsIndexedRaw)(void* drawContext, uint32_t primType, uint32_t indexCount, const uint16_t* indices);
         void (__thiscall* drawRect)(void* drawContext, void* drawTarget, int* rect);
     };
 
