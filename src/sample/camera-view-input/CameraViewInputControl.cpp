@@ -1,3 +1,6 @@
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
 #include "sample/camera-view-input/CameraViewInputControl.hpp"
 #include "sample/camera-view-input/SC4CameraControlLayout.hpp"
 
@@ -5,9 +8,6 @@
 #include "SC4UI.h"
 #include "utils/Logger.h"
 
-#ifndef NOMINMAX
-#define NOMINMAX
-#endif
 #include <Windows.h>
 
 #include <algorithm>
