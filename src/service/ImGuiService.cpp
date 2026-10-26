@@ -945,7 +945,7 @@ ImGuiTextureHandle ImGuiService::CreateTexture(const ImGuiTextureDesc& desc) {
         textures_.emplace(textureId, std::move(tex));
     }
 
-    LOG_INFO("ImGuiService::CreateTexture: created texture id={} ({}x{}, gen={})",
+    LOG_DEBUG("ImGuiService::CreateTexture: created texture id={} ({}x{}, gen={})",
              textureId, desc.width, desc.height, currentGen);
 
     return ImGuiTextureHandle{textureId, currentGen};
@@ -1014,7 +1014,7 @@ void ImGuiService::ReleaseTexture(ImGuiTextureHandle handle) {
         }
     }
 
-    LOG_INFO("ImGuiService::ReleaseTexture: queued texture release (id={})", handle.id);
+    LOG_DEBUG("ImGuiService::ReleaseTexture: queued texture release (id={})", handle.id);
 }
 
 bool ImGuiService::IsTextureValid(const ImGuiTextureHandle handle) const {
@@ -1055,7 +1055,7 @@ void ImGuiService::ProcessPendingTextureReleases_() {
 
         ReleaseDriverTexture_(it->second);
         textures_.erase(it);
-        LOG_INFO("ImGuiService::ProcessPendingTextureReleases_: released texture (id={})", textureId);
+        LOG_DEBUG("ImGuiService::ProcessPendingTextureReleases_: released texture (id={})", textureId);
     }
 }
 

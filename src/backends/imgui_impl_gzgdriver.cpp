@@ -8,6 +8,8 @@
 
 #include <algorithm>
 #include <cstddef>
+#include <cstring>
+#include <unordered_map>
 
 namespace {
     // cIGZGDriver vocabulary. The interface takes plain integers. These are the values the
@@ -92,6 +94,8 @@ namespace {
         bool TexturesSaved = false;
         bool IsTextureProbed = false;   // Checked against the first texture this driver creates.
         bool IsTextureReliable = false;
+        bool PowerOfTwoOnly = false;    // Set once a non-power-of-two texture fails and its padded copy works.
+        std::unordered_map<uint32_t, ImVec2> PaddedUvScale;  // Padded texture -> share of it the image fills.
     };
 
     ImGui_ImplGZGDriver_Data* GetBackendData() {
@@ -130,6 +134,30 @@ namespace {
             }
         }
         return bd->Upload.Data;
+    }
+
+    bool IsPowerOfTwo(const int v) {
+        return (v & (v - 1)) == 0;
+    }
+
+    int NextPowerOfTwo(const int v) {
+        int p = 1;
+        while (p < v) {
+            p <<= 1;
+        }
+        return p;
+    }
+
+    // Copies tightly packed sw x sh RGBA32 pixels into the top-left of a dw x dh buffer and fills
+    // the rest with the edge pixels, so linear filtering at the image's edge does not pull in
+    // anything else.
+    void PadRgba(const uint32_t* src, const int sw, const int sh, uint32_t* dst, const int dw, const int dh) {
+        for (int y = 0; y < dh; ++y) {
+            const uint32_t* srcRow = src + (std::min)(y, sh - 1) * sw;
+            uint32_t* dstRow = dst + y * dw;
+            std::memcpy(dstRow, srcRow, sw * sizeof(uint32_t));
+            std::fill(dstRow + sw, dstRow + dw, srcRow[sw - 1]);
+        }
     }
 
     void UploadRect(ImGui_ImplGZGDriver_Data* bd, const uint32_t texture, const int x, const int y,
@@ -175,6 +203,8 @@ namespace {
             }
         }
 
+        // A texture forgotten after a device loss is never destroyed, so its name can come back.
+        bd->PaddedUvScale.erase(texture);
         UploadRect(bd, texture, 0, 0, w, h, pixels, pitch);
         return texture;
     }
@@ -449,8 +479,28 @@ void ImGui_ImplGZGDriver_RenderDrawData(ImDrawData* draw_data) {
         for (const ImDrawVert& src : draw_list->VtxBuffer) {
             *dst++ = GZVertex{src.pos.x, src.pos.y, 0.0f, RgbaToBgra(src.col), src.uv.x, src.uv.y};
         }
-        const GZVertex* vtx_base = bd->Vertices.Data;
         const ImDrawIdx* idx_base = draw_list->IdxBuffer.Data;
+
+        // A padded texture's image only fills part of it. ImGui gives every command vertices of
+        // its own, so scaling the range a command's indices span touches no other command.
+        if (!bd->PaddedUvScale.empty()) {
+            for (const ImDrawCmd& cmd : draw_list->CmdBuffer) {
+                if (cmd.UserCallback != nullptr || cmd.ElemCount == 0) {
+                    continue;
+                }
+                const auto padded = bd->PaddedUvScale.find(static_cast<uint32_t>(cmd.GetTexID()));
+                if (padded == bd->PaddedUvScale.end()) {
+                    continue;
+                }
+                const ImDrawIdx* first = idx_base + cmd.IdxOffset;
+                const auto [low, high] = std::minmax_element(first, first + cmd.ElemCount);
+                for (unsigned int v = cmd.VtxOffset + *low; v <= cmd.VtxOffset + *high; ++v) {
+                    bd->Vertices[v].u *= padded->second.x;
+                    bd->Vertices[v].v *= padded->second.y;
+                }
+            }
+        }
+        const GZVertex* vtx_base = bd->Vertices.Data;
         unsigned int last_vtx_offset = ~0u;
 
         for (const ImDrawCmd& cmd : draw_list->CmdBuffer) {
@@ -520,13 +570,40 @@ uint32_t ImGui_ImplGZGDriver_CreateTexture(const void* rgba_pixels, const int wi
     if (!bd || !rgba_pixels) {
         return 0;
     }
-    return CreateDriverTexture(bd, rgba_pixels, width, height, width * 4);
+    const bool powerOfTwo = IsPowerOfTwo(width) && IsPowerOfTwo(height);
+    if (powerOfTwo || !bd->PowerOfTwoOnly) {
+        const uint32_t texture = CreateDriverTexture(bd, rgba_pixels, width, height, width * 4);
+        if (texture != 0 || powerOfTwo) {
+            return texture;
+        }
+    }
+
+    // The built-in DirectX 7 driver only creates power-of-two textures. Pad the image to the next
+    // power of two. Callers still pass UVs for the whole image: RenderDrawData scales them down
+    // to the part of the texture the image fills.
+    const int w2 = NextPowerOfTwo(width);
+    const int h2 = NextPowerOfTwo(height);
+    ImVector<uint32_t> padded;
+    padded.resize(w2 * h2);
+    PadRgba(static_cast<const uint32_t*>(rgba_pixels), width, height, padded.Data, w2, h2);
+    const uint32_t texture = CreateDriverTexture(bd, padded.Data, w2, h2, w2 * 4);
+    if (texture == 0) {
+        return 0;
+    }
+    bd->PaddedUvScale[texture] = ImVec2(static_cast<float>(width) / w2, static_cast<float>(height) / h2);
+    if (!bd->PowerOfTwoOnly) {
+        bd->PowerOfTwoOnly = true;
+        LOG_INFO("ImGui: this graphics driver only creates power-of-two textures, so textures of other "
+                 "sizes are padded to the next power of two");
+    }
+    return texture;
 }
 
 void ImGui_ImplGZGDriver_DestroyTexture(uint32_t texture) {
     ImGui_ImplGZGDriver_Data* bd = GetBackendData();
     if (bd && texture != 0) {
         bd->Driver->DeleteTextures(1, &texture);
+        bd->PaddedUvScale.erase(texture);
     }
 }
 
