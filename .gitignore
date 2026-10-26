@@ -378,3 +378,6 @@ fonts/
 docs/doxygen/
 dist/*.exe
 imgui.lib
+cmake-build-*
+.mcp.json
+config.toml
