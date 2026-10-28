@@ -41,6 +41,12 @@ namespace {
     // ImGui never needs more than this for its atlas.
     constexpr auto kMaxTextureSize = 2048;
 
+    // The built-in software driver stores texels in 256-wide rows and refuses anything larger
+    // (0x008DEB20). It addresses texels with a (size - 1) mask (0x008E0100), so a
+    // non-power-of-two texture is created without error but samples garbage.
+    constexpr uint32_t kSoftwareDriverClsid = 0x7ACA35C6;
+    constexpr auto kSoftwareMaxTextureSize = 256;
+
     // kGDVertexFormat_V3F_C4UB_T2F: position, BGRA8 diffuse, one UV set.
     struct GZVertex
     {
@@ -94,7 +100,8 @@ namespace {
         bool TexturesSaved = false;
         bool IsTextureProbed = false;   // Checked against the first texture this driver creates.
         bool IsTextureReliable = false;
-        bool PowerOfTwoOnly = false;    // Set once a non-power-of-two texture fails and its padded copy works.
+        int MaxTextureSize = kMaxTextureSize;
+        bool PowerOfTwoOnly = false;    // Known up front, or set once a non-power-of-two texture fails and its padded copy works.
         std::unordered_map<uint32_t, ImVec2> PaddedUvScale;  // Padded texture -> share of it the image fills.
     };
 
@@ -169,7 +176,7 @@ namespace {
 
     uint32_t CreateDriverTexture(ImGui_ImplGZGDriver_Data* bd, const void* pixels, const int w, const int h,
                                  const int pitch) {
-        if (w <= 0 || h <= 0 || w > kMaxTextureSize || h > kMaxTextureSize) {
+        if (w <= 0 || h <= 0 || w > bd->MaxTextureSize || h > bd->MaxTextureSize) {
             return 0;
         }
         // The game's own texture path, which every driver implements: CreateTexture allocates
@@ -372,8 +379,24 @@ bool ImGui_ImplGZGDriver_Init(cIGZGDriver* driver) {
     io.BackendFlags |= ImGuiBackendFlags_RendererHasVtxOffset;  // We can honor the ImDrawCmd::VtxOffset field, allowing for large meshes.
     io.BackendFlags |= ImGuiBackendFlags_RendererHasTextures;   // We can honor ImGuiPlatformIO::Textures[] requests during render.
 
+    if (driver->GetGZCLSID() == kSoftwareDriverClsid) {
+        bd->MaxTextureSize = kSoftwareMaxTextureSize;
+        bd->PowerOfTwoOnly = true;
+        // The atlas only honors its own limits. Fonts may already have built it at the default
+        // 512 wide, so repack it to fit.
+        ImFontAtlas* atlas = io.Fonts;
+        atlas->TexMinWidth = atlas->TexMaxWidth = atlas->TexMaxHeight = kSoftwareMaxTextureSize;
+        atlas->TexMinHeight = (std::min)(atlas->TexMinHeight, kSoftwareMaxTextureSize);
+        if (atlas->TexData != nullptr &&
+            (atlas->TexData->Width > kSoftwareMaxTextureSize || atlas->TexData->Height > kSoftwareMaxTextureSize)) {
+            atlas->CompactCache();
+        }
+        LOG_INFO("ImGui: the software driver takes power-of-two textures up to {0}x{0}, so ImGui keeps to that",
+                 kSoftwareMaxTextureSize);
+    }
+
     ImGuiPlatformIO& platform_io = ImGui::GetPlatformIO();
-    platform_io.Renderer_TextureMaxWidth = platform_io.Renderer_TextureMaxHeight = kMaxTextureSize;
+    platform_io.Renderer_TextureMaxWidth = platform_io.Renderer_TextureMaxHeight = bd->MaxTextureSize;
     platform_io.DrawCallback_ResetRenderState = DrawCallback_ResetRenderState;
     platform_io.DrawCallback_SetSamplerLinear = DrawCallback_SetSamplerLinear;
     platform_io.DrawCallback_SetSamplerNearest = DrawCallback_SetSamplerNearest;
