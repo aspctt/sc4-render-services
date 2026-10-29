@@ -61,8 +61,12 @@ namespace TerrainDecal
         constexpr uint32_t kDriverTestEqual = 2;
         constexpr uint32_t kDriverTestGreater = 4;
         constexpr uint32_t kDriverTestAlways = 7;
-        constexpr uint32_t kDriverStencilKeep = 0;
-        constexpr uint32_t kDriverStencilReplace = 1;
+        // Stencil ops run zero, keep, replace, incr, decr, invert. Both built-in drivers'
+        // StencilOp index a table in that order (OpenGL 0x0087C5F0 reads 0x00B120BC, DirectX
+        // 0x00882E50 reads 0x00AC450C), and SCD3D11 maps them the same way. SCGL's table
+        // leaves zero out, so its codes are one lower.
+        constexpr uint32_t kDriverStencilKeep = 1;
+        constexpr uint32_t kDriverStencilReplace = 2;
 
         enum RecoveryMethod : int
         {
