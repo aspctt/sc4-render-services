@@ -12,6 +12,7 @@
 #include "cRZMessage2COMDirector.h"
 #include "utils/Logger.h"
 #include "utils/Settings.h"
+#include "utils/UpdateCheck.hpp"
 
 #include <filesystem>
 #include <imgui.h>
@@ -29,6 +30,7 @@ namespace {
     constexpr uint32_t kSC4MessagePreCityShutdown = 0x26D31EC2;
     constexpr uint32_t kSC4MessageLoad = 0x26C63341;
     constexpr uint32_t kSC4MessageSave = 0x26C63344;
+    constexpr uint32_t kSC4MessagePostRegionInit = 0xCBB5BB45;
     #ifndef SC4RS_PRODUCT_VERSION_STR
     #define SC4RS_PRODUCT_VERSION_STR "dev"
     #endif
@@ -142,6 +144,7 @@ public:
                  settings.GetTerrainDecalShadowRecoveryOpacityScale(),
                  settings.GetTerrainDecalShadowRecoveryUseStencil());
         WarnAboutLegacyImGuiDll("startup");
+        checkForUpdates_ = settings.GetCheckForUpdates();
 
         if (!mpFrameWork) {
             LOG_WARN("RenderServicesDirector: framework not available");
@@ -247,6 +250,10 @@ public:
     }
 
     bool DoMessage(cIGZMessage2* pMsg) override {
+        if (pMsg->GetType() == kSC4MessagePostRegionInit) {
+            UpdateCheck::ShowNotice();
+            return true;
+        }
         if (!terrainDecalServiceRegistered_) {
             return false;
         }
@@ -256,6 +263,14 @@ public:
     bool PostAppInit() override {
         // Every plugin is loaded by now, including any that pulled in an old imgui.dll.
         WarnAboutLegacyImGuiDll("after plugins loaded");
+
+        if (checkForUpdates_) {
+            cIGZMessageServer2Ptr pMS2;
+            if (pMS2) {
+                pMS2->AddNotification(this, kSC4MessagePostRegionInit);
+            }
+            UpdateCheck::Start("caspervg/sc4-render-services", "SC4RenderServices", SC4RS_PRODUCT_VERSION_STR);
+        }
         return true;
     }
 
@@ -283,6 +298,12 @@ public:
             messageServer_->RemoveNotification(this, kSC4MessageLoad);
             messageServer_->RemoveNotification(this, kSC4MessageSave);
             messageServer_ = nullptr;
+        }
+        if (checkForUpdates_) {
+            cIGZMessageServer2Ptr pMS2;
+            if (pMS2) {
+                pMS2->RemoveNotification(this, kSC4MessagePostRegionInit);
+            }
         }
 
         imguiService_.Shutdown();
@@ -359,6 +380,7 @@ private:
     TerrainDecalService terrainDecalService_;
     cRZAutoRefCount<cIGZMessageServer2> messageServer_;
     bool terrainDecalServiceRegistered_ = false;
+    bool checkForUpdates_ = false;
     DemoPanelState demoPanelState_{true};
 };
 

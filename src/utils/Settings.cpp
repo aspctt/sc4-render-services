@@ -13,6 +13,7 @@
 namespace {
     constexpr spdlog::level::level_enum kDefaultLogLevel = spdlog::level::info;
     constexpr bool kDefaultLogToFile = true;
+    constexpr bool kDefaultCheckForUpdates = true;
     constexpr float kDefaultFontSize = 13.0f;
     constexpr float kMinFontSize = 8.0f;
     constexpr float kMaxFontSize = 32.0f;
@@ -114,6 +115,7 @@ namespace {
 Settings::Settings()
     : logLevel_(kDefaultLogLevel)
     , logToFile_(kDefaultLogToFile)
+    , checkForUpdates_(kDefaultCheckForUpdates)
     , fontSize_(kDefaultFontSize)
     , fontOversample_(kDefaultFontOversample)
     , theme_(kDefaultTheme)
@@ -168,6 +170,18 @@ void Settings::Load(const std::filesystem::path& settingsFilePath) {
             if (!valid) {
                 logToFile_ = kDefaultLogToFile;
                 LOG_ERROR("Invalid LogToFile value '{}' in {}. Using default true.", text, settingsFilePath.string());
+            }
+        }
+
+        // CheckForUpdates
+        if (section.has("CheckForUpdates")) {
+            bool valid = false;
+            const std::string text = section.get("CheckForUpdates");
+            checkForUpdates_ = ParseBool(text, valid);
+            if (!valid) {
+                checkForUpdates_ = kDefaultCheckForUpdates;
+                LOG_ERROR("Invalid CheckForUpdates value '{}' in {}. Using default true.", text,
+                          settingsFilePath.string());
             }
         }
 
@@ -384,6 +398,7 @@ void Settings::Load(const std::filesystem::path& settingsFilePath) {
 
 spdlog::level::level_enum Settings::GetLogLevel() const noexcept { return logLevel_; }
 bool Settings::GetLogToFile() const noexcept { return logToFile_; }
+bool Settings::GetCheckForUpdates() const noexcept { return checkForUpdates_; }
 float Settings::GetFontSize() const noexcept { return fontSize_; }
 std::string Settings::GetFontFile() const noexcept { return fontFile_; }
 std::string Settings::GetLayoutFile() const noexcept { return layoutFile_; }

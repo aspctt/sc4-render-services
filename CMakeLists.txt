@@ -205,6 +205,7 @@ set(CUSTOM_SERVICES_SOURCES
         ${SC4RS_ROOT}/src/utils/VersionDetection.cpp
         ${SC4RS_ROOT}/src/utils/Logger.cpp
         ${SC4RS_ROOT}/src/utils/Settings.cpp
+        ${SC4RS_ROOT}/src/utils/UpdateCheck.cpp
         ${SC4RS_ROOT}/src/DX7InterfaceHook.cpp
         ${SC4RS_ROOT}/src/backends/imgui_impl_gzgdriver.cpp
 )
@@ -236,7 +237,7 @@ target_compile_definitions(SC4RenderServices PRIVATE
 )
 
 if(WIN32)
-    target_link_libraries(SC4RenderServices PRIVATE kernel32 user32 gdi32 Version ddraw dxguid winmm)
+    target_link_libraries(SC4RenderServices PRIVATE kernel32 user32 gdi32 Version ddraw dxguid winmm wininet)
 endif()
 
 set_target_properties(SC4RenderServices PROPERTIES
