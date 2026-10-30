@@ -15,6 +15,7 @@ public:
     // Logging
     [[nodiscard]] spdlog::level::level_enum GetLogLevel() const noexcept;
     [[nodiscard]] bool GetLogToFile() const noexcept;
+    [[nodiscard]] bool GetCheckForUpdates() const noexcept;
 
     // ImGui appearance
     [[nodiscard]] float GetFontSize() const noexcept;
@@ -39,6 +40,7 @@ public:
 private:
     spdlog::level::level_enum logLevel_;
     bool logToFile_;
+    bool checkForUpdates_;
     float fontSize_;
     std::string fontFile_;
     int fontOversample_;
