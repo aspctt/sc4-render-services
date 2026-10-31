@@ -144,3 +144,19 @@ jobs:
           files: |
             artifacts/*.zip
             artifacts/SC4RenderServices.spdx.json
+
+  # Points the sc4pac package at the new release on a branch of caspervg/simtropolis-channel, and
+  # links to a prefilled pull request in the job summary.
+  sc4pac:
+    needs: release
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    environment: sc4pac
+    concurrency: sc4pac-caspervg-sc4-render-services
+    steps:
+      - uses: caspervg/sc4pac-release-action@v1
+        with:
+          channel: sebamarynissen/simtropolis-channel
+          asset-id: caspervg-sc4-render-services
+          token: ${{ secrets.SC4PAC_FORK_TOKEN }}
